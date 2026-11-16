@@ -42,7 +42,8 @@ impl CursorManager {
         if std::env::var_os("XCURSOR_PATH").is_none() {
             // TTY sessions may not have it; include NixOS's system icon dir.
             let home = std::env::var("HOME").unwrap_or_default();
-            let path = format!("{home}/.local/share/icons:{home}/.icons:/run/current-system/sw/share/icons:/usr/share/icons");
+            let path =
+                format!("{home}/.local/share/icons:{home}/.icons:/run/current-system/sw/share/icons:/usr/share/icons");
             unsafe { std::env::set_var("XCURSOR_PATH", path) };
         }
         let name = std::env::var("XCURSOR_THEME").unwrap_or_else(|_| "Adwaita".into());
@@ -129,9 +130,18 @@ impl CursorManager {
                         )
                     })
                     .clone();
-                let hotspot = Point::<f64, Logical>::from((xhot as f64 / buffer_scale as f64, yhot as f64 / buffer_scale as f64));
+                let hotspot =
+                    Point::<f64, Logical>::from((xhot as f64 / buffer_scale as f64, yhot as f64 / buffer_scale as f64));
                 let loc = (pos - hotspot).to_physical(scale);
-                match MemoryRenderBufferRenderElement::from_buffer(renderer, loc, &buffer, None, None, None, Kind::Cursor) {
+                match MemoryRenderBufferRenderElement::from_buffer(
+                    renderer,
+                    loc,
+                    &buffer,
+                    None,
+                    None,
+                    None,
+                    Kind::Cursor,
+                ) {
                     Ok(e) => vec![OutputRenderElement::Memory(e)],
                     Err(err) => {
                         tracing::warn!(?err, "failed to upload cursor");
@@ -152,15 +162,9 @@ fn load_icon(theme: &CursorTheme, name: &str) -> Option<Vec<Image>> {
 
 /// Pick the animation frame (and its index) for `time` among images nearest to `size`.
 fn frame(time: Duration, size: u32, images: &[Image]) -> (usize, Image) {
-    let nearest = images
-        .iter()
-        .min_by_key(|i| (size as i32 - i.size as i32).abs())
-        .expect("cursor without images");
-    let frames: Vec<(usize, &Image)> = images
-        .iter()
-        .enumerate()
-        .filter(|(_, i)| i.width == nearest.width && i.height == nearest.height)
-        .collect();
+    let nearest = images.iter().min_by_key(|i| (size as i32 - i.size as i32).abs()).expect("cursor without images");
+    let frames: Vec<(usize, &Image)> =
+        images.iter().enumerate().filter(|(_, i)| i.width == nearest.width && i.height == nearest.height).collect();
     let total: u32 = frames.iter().map(|(_, i)| i.delay).sum();
     if total == 0 {
         return (frames[0].0, frames[0].1.clone());

@@ -91,9 +91,7 @@ impl UdevData {
     }
 
     pub fn import_dmabuf(&mut self, dmabuf: &Dmabuf) -> bool {
-        self.renderer
-            .as_mut()
-            .is_some_and(|r| r.import_dmabuf(dmabuf, None).is_ok())
+        self.renderer.as_mut().is_some_and(|r| r.import_dmabuf(dmabuf, None).is_ok())
     }
 }
 
@@ -107,9 +105,7 @@ pub fn init_udev(
 
     let primary_gpu = match std::env::var("XROSS_DRM_DEVICE") {
         Ok(path) => DrmNode::from_path(path)?,
-        Err(_) => primary_gpu(&seat_name)?
-            .and_then(|p| DrmNode::from_path(p).ok())
-            .ok_or("no GPU found")?,
+        Err(_) => primary_gpu(&seat_name)?.and_then(|p| DrmNode::from_path(p).ok()).ok_or("no GPU found")?,
     };
     let primary_gpu = primary_gpu.node_with_type(NodeType::Primary).and_then(Result::ok).unwrap_or(primary_gpu);
     tracing::info!(%primary_gpu, "using primary GPU");
@@ -127,9 +123,7 @@ pub fn init_udev(
 
     // Input.
     let mut libinput = Libinput::new_with_udev::<LibinputSessionInterface<LibSeatSession>>(session.clone().into());
-    libinput
-        .udev_assign_seat(&seat_name)
-        .map_err(|()| "failed to assign libinput seat")?;
+    libinput.udev_assign_seat(&seat_name).map_err(|()| "failed to assign libinput seat")?;
     let libinput_backend = LibinputInputBackend::new(libinput.clone());
     event_loop.handle().insert_source(libinput_backend, |mut event, _, state| {
         if let InputEvent::DeviceAdded { device } = &mut event {
@@ -206,9 +200,7 @@ pub fn init_udev(
     let renderer = udev_ref.renderer.as_mut().ok_or("primary GPU could not be initialized")?;
     state.shm_state.update_formats(renderer.shm_formats());
     let feedback = DmabufFeedbackBuilder::new(primary_gpu.dev_id(), renderer.dmabuf_formats()).build()?;
-    let global = state
-        .dmabuf_state
-        .create_global_with_default_feedback::<XrossState>(&state.display_handle, &feedback);
+    let global = state.dmabuf_state.create_global_with_default_feedback::<XrossState>(&state.display_handle, &feedback);
     state.dmabuf_global = Some(global);
 
     Ok(())
@@ -224,11 +216,14 @@ fn configure_input_device(device: &mut smithay::reexports::input::Device) {
     }
 }
 
-fn device_added(state: &mut XrossState, udev: &SharedUdev, node: DrmNode, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let fd = udev
-        .borrow_mut()
-        .session
-        .open(path, OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK)?;
+fn device_added(
+    state: &mut XrossState,
+    udev: &SharedUdev,
+    node: DrmNode,
+    path: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let fd =
+        udev.borrow_mut().session.open(path, OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK)?;
     let fd = DrmDeviceFd::new(DeviceFd::from(fd));
 
     let (drm, notifier) = DrmDevice::new(fd.clone(), true)?;
@@ -246,7 +241,8 @@ fn device_added(state: &mut XrossState, udev: &SharedUdev, node: DrmNode, path: 
 
     let allocator = GbmAllocator::new(gbm.clone(), GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT);
     let exporter = GbmFramebufferExporter::new(gbm.clone(), NodeFilter::Node(node));
-    let manager = DrmOutputManager::new(drm, allocator, exporter, Some(gbm), COLOR_FORMATS.iter().copied(), render_formats);
+    let manager =
+        DrmOutputManager::new(drm, allocator, exporter, Some(gbm), COLOR_FORMATS.iter().copied(), render_formats);
 
     {
         let mut u = udev.borrow_mut();
@@ -272,7 +268,9 @@ fn scan_connectors(state: &mut XrossState, udev: &SharedUdev) {
 
     for event in events {
         match event {
-            DrmScanEvent::Connected { connector, crtc: Some(crtc) } => connector_connected(state, udev, connector, crtc),
+            DrmScanEvent::Connected { connector, crtc: Some(crtc) } => {
+                connector_connected(state, udev, connector, crtc)
+            }
             DrmScanEvent::Disconnected { crtc: Some(crtc), .. } => {
                 let surface = {
                     let mut u = udev.borrow_mut();
@@ -307,7 +305,9 @@ fn setup_output(state: &mut XrossState, udev: &SharedUdev, connector: connector:
     let name = format!("{}-{}", connector.interface().as_str(), connector.interface_id());
     let mut guard = udev.borrow_mut();
     let u = &mut *guard;
-    let (Some(gpu), Some(renderer)) = (u.gpu.as_mut(), u.renderer.as_mut()) else { return false };
+    let (Some(gpu), Some(renderer)) = (u.gpu.as_mut(), u.renderer.as_mut()) else {
+        return false;
+    };
     if gpu.surface.is_some() {
         tracing::info!(%name, "ignoring additional output (single-output for now)");
         return false;
@@ -339,12 +339,7 @@ fn setup_output(state: &mut XrossState, udev: &SharedUdev, connector: connector:
     );
     let global = output.create_global::<XrossState>(&state.display_handle);
     output.set_preferred(wl_mode);
-    output.change_current_state(
-        Some(wl_mode),
-        None,
-        u.output_scale.map(OutputScale::Fractional),
-        Some((0, 0).into()),
-    );
+    output.change_current_state(Some(wl_mode), None, u.output_scale.map(OutputScale::Fractional), Some((0, 0).into()));
 
     let planes = gpu.manager.device().planes(&crtc).ok();
     let drm_output = match gpu.manager.lock().initialize_output::<_, crate::render::OutputRenderElement>(
@@ -379,7 +374,9 @@ fn remove_output(state: &mut XrossState, surface: OutputSurface) {
 }
 
 fn schedule_render(state: &XrossState, delay: Duration) {
-    let Some(udev) = state.udev.as_ref() else { return };
+    let Some(udev) = state.udev.as_ref() else {
+        return;
+    };
     {
         let mut u = udev.borrow_mut();
         if u.render_scheduled {
@@ -397,10 +394,14 @@ fn schedule_render(state: &XrossState, delay: Duration) {
 }
 
 fn on_vblank(state: &mut XrossState) {
-    let Some(udev) = state.udev.clone() else { return };
+    let Some(udev) = state.udev.clone() else {
+        return;
+    };
     let refresh = {
         let mut u = udev.borrow_mut();
-        let Some(surface) = u.gpu.as_mut().and_then(|g| g.surface.as_mut()) else { return };
+        let Some(surface) = u.gpu.as_mut().and_then(|g| g.surface.as_mut()) else {
+            return;
+        };
         if let Err(err) = surface.drm_output.frame_submitted() {
             tracing::warn!(?err, "frame_submitted failed");
         }
@@ -414,14 +415,20 @@ fn on_vblank(state: &mut XrossState) {
 }
 
 fn render(state: &mut XrossState) {
-    let Some(udev) = state.udev.clone() else { return };
+    let Some(udev) = state.udev.clone() else {
+        return;
+    };
     let mut guard = udev.borrow_mut();
     let u = &mut *guard;
     if !u.session.is_active() {
         return;
     }
-    let (Some(gpu), Some(renderer)) = (u.gpu.as_mut(), u.renderer.as_mut()) else { return };
-    let Some(surface) = gpu.surface.as_mut() else { return };
+    let (Some(gpu), Some(renderer)) = (u.gpu.as_mut(), u.renderer.as_mut()) else {
+        return;
+    };
+    let Some(surface) = gpu.surface.as_mut() else {
+        return;
+    };
     if surface.frame_pending {
         return;
     }

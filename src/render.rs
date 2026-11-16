@@ -53,18 +53,18 @@ impl XrossState {
 
         // Must run before locking the layer map below (pointer_hit locks it too).
         let focused = self.focused_window();
-        let hovered_close = self
-            .pointer_hit(pointer_pos)
-            .and_then(|h| match h {
-                PointerHit::CloseButton(w) => Some(w),
-                _ => None,
-            });
+        let hovered_close = self.pointer_hit(pointer_pos).and_then(|h| match h {
+            PointerHit::CloseButton(w) => Some(w),
+            _ => None,
+        });
 
         let layers = layer_map_for_output(output);
         let push_layers = |renderer: &mut GlesRenderer, elements: &mut Vec<OutputRenderElement>, kind: Layer| {
             // layers_on() is bottom-to-top within a layer; we need front-to-back.
             for layer in layers.layers_on(kind).rev() {
-                let Some(geo) = layers.layer_geometry(layer) else { continue };
+                let Some(geo) = layers.layer_geometry(layer) else {
+                    continue;
+                };
                 let loc = (geo.loc - layer.geometry().loc).to_physical_precise_round(scale);
                 elements.extend(
                     layer
@@ -75,11 +75,17 @@ impl XrossState {
             }
         };
 
+        // A fullscreen window on top covers panels too (but not overlays like notifications).
+        let fullscreen_on_top = self.fullscreen_on_top();
         push_layers(renderer, &mut elements, Layer::Overlay);
-        push_layers(renderer, &mut elements, Layer::Top);
+        if !fullscreen_on_top {
+            push_layers(renderer, &mut elements, Layer::Top);
+        }
 
         for window in self.space.elements().rev() {
-            let Some(loc) = self.space.element_location(window) else { continue };
+            let Some(loc) = self.space.element_location(window) else {
+                continue;
+            };
             let geo = window.geometry();
             let content = Rectangle::new(loc, geo.size);
             if !output_geo.overlaps(content) && !output_geo.overlaps(ssd::title_rect(content)) {
@@ -107,6 +113,9 @@ impl XrossState {
             }
         }
 
+        if fullscreen_on_top {
+            push_layers(renderer, &mut elements, Layer::Top);
+        }
         push_layers(renderer, &mut elements, Layer::Bottom);
         push_layers(renderer, &mut elements, Layer::Background);
         elements
@@ -116,6 +125,12 @@ impl XrossState {
 impl XrossState {
     /// Per-frame housekeeping after rendering an output: frame callbacks and cleanup.
     pub fn post_render(&mut self, output: &Output) {
+        let area = self.usable_area();
+        if area != self.last_usable_area {
+            self.last_usable_area = area;
+            self.relayout();
+        }
+
         let now = self.start_time.elapsed();
         let throttle = Some(std::time::Duration::ZERO);
         for window in self.space.elements() {
@@ -127,7 +142,9 @@ impl XrossState {
             });
         }
         if let smithay::input::pointer::CursorImageStatus::Surface(surface) = &self.cursor_status {
-            smithay::desktop::utils::send_frames_surface_tree(surface, output, now, throttle, |_, _| Some(output.clone()));
+            smithay::desktop::utils::send_frames_surface_tree(surface, output, now, throttle, |_, _| {
+                Some(output.clone())
+            });
         }
 
         self.space.refresh();

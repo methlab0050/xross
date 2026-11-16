@@ -11,8 +11,7 @@ use smithay::{
     },
     reexports::{
         wayland_protocols::xdg::{
-            decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode,
-            shell::server::xdg_toplevel,
+            decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode, shell::server::xdg_toplevel,
         },
         wayland_server::{
             Resource,
@@ -24,8 +23,8 @@ use smithay::{
         compositor::with_states,
         seat::WaylandFocus,
         shell::xdg::{
-            PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
-            XdgToplevelSurfaceData, decoration::XdgDecorationHandler,
+            PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState, XdgToplevelSurfaceData,
+            decoration::XdgDecorationHandler,
         },
     },
 };
@@ -52,13 +51,13 @@ impl XdgShellHandler for XrossState {
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
-        self.unmapped_windows
-            .retain(|w| w.toplevel().is_some_and(|t| t != &surface));
+        self.unmapped_windows.retain(|w| w.toplevel().is_some_and(|t| t != &surface));
         let Some(window) = self.window_for_surface(surface.wl_surface()) else {
             return;
         };
         let was_focused = self.focused_window().as_ref() == Some(&window);
         self.space.unmap_elem(&window);
+        self.forget_window(&window);
         if was_focused {
             self.focus_top_window();
         }
@@ -103,15 +102,35 @@ impl XdgShellHandler for XrossState {
     }
 
     fn maximize_request(&mut self, surface: ToplevelSurface) {
-        // Real maximize arrives with snap layouts (stage 3); acknowledge for now.
-        if surface.is_initial_configure_sent() {
-            surface.send_configure();
+        if let Some(window) = self.window_for_surface(surface.wl_surface()) {
+            self.set_window_slot(&window, Some(crate::layout::snap::Slot::Maximized));
+            self.apply_geometry(&window);
+        } else if let Some(window) = self.unmapped_window_for(&surface) {
+            self.maximize_before_map(&window);
+        }
+    }
+
+    fn unmaximize_request(&mut self, surface: ToplevelSurface) {
+        if let Some(window) = self.window_for_surface(surface.wl_surface()) {
+            self.set_window_slot(&window, None);
+            // Answer even if nothing changed; the client waits for a configure.
+            self.apply_geometry(&window);
         }
     }
 
     fn fullscreen_request(&mut self, surface: ToplevelSurface, _output: Option<wl_output::WlOutput>) {
-        if surface.is_initial_configure_sent() {
-            surface.send_configure();
+        if let Some(window) = self.window_for_surface(surface.wl_surface()) {
+            self.set_fullscreen(&window, true);
+        } else if let Some(window) = self.unmapped_window_for(&surface) {
+            self.fullscreen_before_map(&window, true);
+        }
+    }
+
+    fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+        if let Some(window) = self.window_for_surface(surface.wl_surface()) {
+            self.set_fullscreen(&window, false);
+        } else if let Some(window) = self.unmapped_window_for(&surface) {
+            self.fullscreen_before_map(&window, false);
         }
     }
 
@@ -119,16 +138,14 @@ impl XdgShellHandler for XrossState {
         let seat: Seat<Self> = Seat::from_resource(&seat).unwrap();
         let kind = PopupKind::Xdg(surface);
         let Some(root) = find_popup_root_surface(&kind).ok().and_then(|root| {
-            self.window_for_surface(&root)
-                .map(KeyboardFocusTarget::Window)
-                .or_else(|| {
-                    self.space.outputs().find_map(|o| {
-                        layer_map_for_output(o)
-                            .layer_for_surface(&root, WindowSurfaceType::TOPLEVEL)
-                            .cloned()
-                            .map(KeyboardFocusTarget::Layer)
-                    })
+            self.window_for_surface(&root).map(KeyboardFocusTarget::Window).or_else(|| {
+                self.space.outputs().find_map(|o| {
+                    layer_map_for_output(o)
+                        .layer_for_surface(&root, WindowSurfaceType::TOPLEVEL)
+                        .cloned()
+                        .map(KeyboardFocusTarget::Layer)
                 })
+            })
         }) else {
             return;
         };
@@ -185,12 +202,18 @@ impl XdgDecorationHandler for XrossState {
 }
 
 impl XrossState {
+    fn unmapped_window_for(&self, surface: &ToplevelSurface) -> Option<Window> {
+        self.unmapped_windows.iter().find(|w| w.toplevel() == Some(surface)).cloned()
+    }
+
     pub fn start_move(&mut self, window: Window, start_data: PointerGrabStartData<Self>, serial: Serial) {
         let Some(initial_window_location) = self.space.element_location(&window) else {
             return;
         };
         let pointer = self.seat.get_pointer().unwrap();
-        let grab = MoveSurfaceGrab { start_data, window, initial_window_location };
+        // Snapped windows un-snap once the drag passes a small threshold.
+        let unsnap = self.is_snapped(&window);
+        let grab = MoveSurfaceGrab { start_data, window, initial_window_location, unsnap };
         pointer.set_grab(self, grab, serial, Focus::Clear);
     }
 
@@ -201,6 +224,7 @@ impl XrossState {
         edges: crate::grabs::ResizeEdge,
         serial: Serial,
     ) {
+        self.unsnap_in_place(&window);
         let Some(loc) = self.space.element_location(&window) else {
             return;
         };
@@ -213,31 +237,20 @@ impl XrossState {
     /// xdg-specific commit handling: initial configures, and mapping new toplevels
     /// once they have a buffer.
     pub fn handle_xdg_commit(&mut self, surface: &WlSurface) {
-        if let Some(idx) = self
-            .unmapped_windows
-            .iter()
-            .position(|w| w.wl_surface().is_some_and(|s| &*s == surface))
-        {
+        if let Some(idx) = self.unmapped_windows.iter().position(|w| w.wl_surface().is_some_and(|s| &*s == surface)) {
             let window = self.unmapped_windows[idx].clone();
             let toplevel = window.toplevel().unwrap();
             let initial_configure_sent = with_states(surface, |states| {
-                states
-                    .data_map
-                    .get::<XdgToplevelSurfaceData>()
-                    .unwrap()
-                    .lock()
-                    .unwrap()
-                    .initial_configure_sent
+                states.data_map.get::<XdgToplevelSurfaceData>().unwrap().lock().unwrap().initial_configure_sent
             });
             if !initial_configure_sent {
                 toplevel.send_configure();
                 return;
             }
             window.on_commit();
-            let has_buffer = smithay::backend::renderer::utils::with_renderer_surface_state(surface, |s| {
-                s.buffer().is_some()
-            })
-            .unwrap_or(false);
+            let has_buffer =
+                smithay::backend::renderer::utils::with_renderer_surface_state(surface, |s| s.buffer().is_some())
+                    .unwrap_or(false);
             if has_buffer {
                 self.unmapped_windows.remove(idx);
                 self.place_new_window(window);
@@ -280,7 +293,11 @@ impl XrossState {
     }
 }
 
-fn check_grab(seat: &Seat<XrossState>, surface: &WlSurface, serial: Serial) -> Option<PointerGrabStartData<XrossState>> {
+fn check_grab(
+    seat: &Seat<XrossState>,
+    surface: &WlSurface,
+    serial: Serial,
+) -> Option<PointerGrabStartData<XrossState>> {
     let pointer = seat.get_pointer()?;
     if !pointer.has_grab(serial) {
         return None;

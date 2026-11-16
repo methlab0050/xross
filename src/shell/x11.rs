@@ -73,10 +73,7 @@ impl XrossState {
     }
 
     pub fn window_for_x11(&self, surface: &X11Surface) -> Option<Window> {
-        self.space
-            .elements()
-            .find(|w| w.x11_surface() == Some(surface))
-            .cloned()
+        self.space.elements().find(|w| w.x11_surface() == Some(surface)).cloned()
     }
 }
 
@@ -99,7 +96,15 @@ impl XwmHandler for XrossState {
             tracing::warn!(?err, "failed to map X11 window");
             return;
         }
-        self.place_new_window(Window::new_x11_window(surface));
+        // _NET_WM_STATE set before mapping (e.g. `xterm -maximized`) arrives as state, not requests.
+        let (maximized, fullscreen) = (surface.is_maximized(), surface.is_fullscreen());
+        let window = Window::new_x11_window(surface);
+        self.place_new_window(window.clone());
+        if fullscreen {
+            self.set_fullscreen(&window, true);
+        } else if maximized {
+            self.set_window_slot(&window, Some(crate::layout::snap::Slot::Maximized));
+        }
     }
 
     fn mapped_override_redirect_window(&mut self, _xwm: XwmId, surface: X11Surface) {
@@ -112,6 +117,7 @@ impl XwmHandler for XrossState {
         if let Some(window) = self.window_for_x11(&surface) {
             let was_focused = self.focused_window().as_ref() == Some(&window);
             self.space.unmap_elem(&window);
+            self.forget_window(&window);
             if was_focused {
                 self.focus_top_window();
             }
@@ -133,6 +139,13 @@ impl XwmHandler for XrossState {
         h: Option<u32>,
         _reorder: Option<Reorder>,
     ) {
+        // Snapped windows keep the geometry we gave them.
+        if let Some(window) = self.window_for_x11(&surface)
+            && self.is_snapped(&window)
+        {
+            self.apply_geometry(&window);
+            return;
+        }
         let mut geo = surface.geometry();
         if let Some(w) = w {
             geo.size.w = w as i32;
@@ -159,20 +172,36 @@ impl XwmHandler for XrossState {
         geometry: Rectangle<i32, Logical>,
         _above: Option<u32>,
     ) {
+        // Move without raising; stacking only changes on focus.
         if let Some(window) = self.window_for_x11(&surface) {
-            self.space.map_element(window, geometry.loc, false);
+            self.space.relocate_element(&window, geometry.loc);
         }
     }
 
-    fn maximize_request(&mut self, _xwm: XwmId, _surface: X11Surface) {
-        // Stage 3 (snap layouts) implements maximize.
+    fn maximize_request(&mut self, _xwm: XwmId, surface: X11Surface) {
+        if let Some(window) = self.window_for_x11(&surface) {
+            self.set_window_slot(&window, Some(crate::layout::snap::Slot::Maximized));
+        }
     }
 
-    fn unmaximize_request(&mut self, _xwm: XwmId, _surface: X11Surface) {}
+    fn unmaximize_request(&mut self, _xwm: XwmId, surface: X11Surface) {
+        if let Some(window) = self.window_for_x11(&surface) {
+            self.set_window_slot(&window, None);
+            self.apply_geometry(&window);
+        }
+    }
 
-    fn fullscreen_request(&mut self, _xwm: XwmId, _surface: X11Surface) {}
+    fn fullscreen_request(&mut self, _xwm: XwmId, surface: X11Surface) {
+        if let Some(window) = self.window_for_x11(&surface) {
+            self.set_fullscreen(&window, true);
+        }
+    }
 
-    fn unfullscreen_request(&mut self, _xwm: XwmId, _surface: X11Surface) {}
+    fn unfullscreen_request(&mut self, _xwm: XwmId, surface: X11Surface) {
+        if let Some(window) = self.window_for_x11(&surface) {
+            self.set_fullscreen(&window, false);
+        }
+    }
 
     fn resize_request(&mut self, _xwm: XwmId, surface: X11Surface, _button: u32, edges: X11ResizeEdge) {
         let pointer = self.seat.get_pointer().unwrap();
@@ -204,8 +233,12 @@ impl XwmHandler for XrossState {
 
     fn send_selection(&mut self, _xwm: XwmId, selection: SelectionTarget, mime_type: String, fd: OwnedFd) {
         let res = match selection {
-            SelectionTarget::Clipboard => request_data_device_client_selection(&self.seat, mime_type, fd).map_err(|e| e.to_string()),
-            SelectionTarget::Primary => request_primary_client_selection(&self.seat, mime_type, fd).map_err(|e| e.to_string()),
+            SelectionTarget::Clipboard => {
+                request_data_device_client_selection(&self.seat, mime_type, fd).map_err(|e| e.to_string())
+            }
+            SelectionTarget::Primary => {
+                request_primary_client_selection(&self.seat, mime_type, fd).map_err(|e| e.to_string())
+            }
         };
         if let Err(err) = res {
             tracing::warn!(%err, ?selection, "failed to send Wayland selection to Xwayland");

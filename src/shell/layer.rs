@@ -9,8 +9,8 @@ use smithay::{
         compositor::with_states,
         shell::{
             wlr_layer::{
-                KeyboardInteractivity, Layer, LayerSurface as WlrLayerSurface, LayerSurfaceData,
-                WlrLayerShellHandler, WlrLayerShellState,
+                KeyboardInteractivity, Layer, LayerSurface as WlrLayerSurface, LayerSurfaceData, WlrLayerShellHandler,
+                WlrLayerShellState,
             },
             xdg::PopupSurface,
         },
@@ -31,10 +31,8 @@ impl WlrLayerShellHandler for XrossState {
         _layer: Layer,
         namespace: String,
     ) {
-        let Some(output) = wl_output
-            .as_ref()
-            .and_then(Output::from_resource)
-            .or_else(|| self.space.outputs().next().cloned())
+        let Some(output) =
+            wl_output.as_ref().and_then(Output::from_resource).or_else(|| self.space.outputs().next().cloned())
         else {
             surface.send_close();
             return;
@@ -91,13 +89,7 @@ impl XrossState {
         };
 
         let initial_configure_sent = with_states(surface, |states| {
-            states
-                .data_map
-                .get::<LayerSurfaceData>()
-                .unwrap()
-                .lock()
-                .unwrap()
-                .initial_configure_sent
+            states.data_map.get::<LayerSurfaceData>().unwrap().lock().unwrap().initial_configure_sent
         });
 
         // Arrange before the initial configure so the client gets its real size.

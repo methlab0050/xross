@@ -8,11 +8,10 @@ use std::cell::RefCell;
 
 use smithay::{
     desktop::{Space, Window, WindowSurface},
-    input::pointer::{ButtonEvent, GrabStartData as PointerGrabStartData, MotionEvent, PointerGrab, PointerInnerHandle},
-    reexports::{
-        wayland_protocols::xdg::shell::server::xdg_toplevel,
-        wayland_server::protocol::wl_surface::WlSurface,
+    input::pointer::{
+        ButtonEvent, GrabStartData as PointerGrabStartData, MotionEvent, PointerGrab, PointerInnerHandle,
     },
+    reexports::{wayland_protocols::xdg::shell::server::xdg_toplevel, wayland_server::protocol::wl_surface::WlSurface},
     utils::{Logical, Point, Rectangle, Size},
     wayland::{compositor::with_states, seat::WaylandFocus, shell::xdg::SurfaceCachedState},
     xwayland::xwm::ResizeEdge as X11ResizeEdge,
@@ -83,9 +82,15 @@ impl ResizeEdge {
 enum ResizeState {
     #[default]
     Idle,
-    Resizing { edges: ResizeEdge, initial: Rectangle<i32, Logical> },
+    Resizing {
+        edges: ResizeEdge,
+        initial: Rectangle<i32, Logical>,
+    },
     /// Grab released; fix up the location on the next commit, then go idle.
-    WaitingForLastCommit { edges: ResizeEdge, initial: Rectangle<i32, Logical> },
+    WaitingForLastCommit {
+        edges: ResizeEdge,
+        initial: Rectangle<i32, Logical>,
+    },
 }
 
 fn with_resize_state<T>(window: &Window, f: impl FnOnce(&mut ResizeState) -> T) -> T {
@@ -237,11 +242,7 @@ impl PointerGrab<XrossState> for ResizeSurfaceGrab {
 
 /// Called on every surface commit: re-anchor windows being resized from the top/left.
 pub fn handle_commit(space: &mut Space<Window>, surface: &WlSurface) {
-    let Some(window) = space
-        .elements()
-        .find(|w| w.wl_surface().is_some_and(|s| &*s == surface))
-        .cloned()
-    else {
+    let Some(window) = space.elements().find(|w| w.wl_surface().is_some_and(|s| &*s == surface)).cloned() else {
         return;
     };
 

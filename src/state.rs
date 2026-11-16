@@ -41,6 +41,13 @@ pub struct XrossState {
     /// Toplevels that exist but haven't committed a buffer yet.
     pub unmapped_windows: Vec<Window>,
     pub popups: PopupManager,
+    /// Snap layout of the (single, for now) workspace.
+    pub tiling: crate::layout::snap::Tiling<Window>,
+    pub snap_combo: crate::input::combo::SnapCombo<Window>,
+    /// Layout from before the current snap combo started (see [`crate::input::combo`]).
+    pub snap_snapshot: Option<crate::layout::snap::Tiling<Window>>,
+    /// Last seen usable area; snapped windows are re-laid out when it changes.
+    pub last_usable_area: smithay::utils::Rectangle<i32, smithay::utils::Logical>,
 
     // Protocol state
     pub compositor_state: CompositorState,
@@ -113,6 +120,10 @@ impl XrossState {
             space: Space::default(),
             unmapped_windows: Vec::new(),
             popups: PopupManager::default(),
+            tiling: Default::default(),
+            snap_combo: Default::default(),
+            snap_snapshot: None,
+            last_usable_area: Default::default(),
 
             compositor_state,
             xdg_shell_state,
@@ -153,10 +164,7 @@ impl XrossState {
 
         loop_handle
             .insert_source(listening_socket, move |client_stream, _, state| {
-                if let Err(err) = state
-                    .display_handle
-                    .insert_client(client_stream, Arc::new(ClientState::default()))
-                {
+                if let Err(err) = state.display_handle.insert_client(client_stream, Arc::new(ClientState::default())) {
                     tracing::warn!(%err, "failed to insert client");
                 }
             })

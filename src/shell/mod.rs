@@ -1,6 +1,7 @@
 //! Window management: lookups, placement, focus, and hit-testing.
 
 pub mod layer;
+pub mod snap;
 pub mod ssd;
 pub mod x11;
 pub mod xdg;
@@ -21,12 +22,7 @@ use crate::{focus::KeyboardFocusTarget, state::XrossState};
 #[derive(Debug, Clone)]
 pub enum PointerHit {
     /// A client surface; the point is the surface origin in global coordinates.
-    Surface {
-        surface: WlSurface,
-        origin: Point<f64, Logical>,
-        window: Option<Window>,
-        layer: Option<LayerSurface>,
-    },
+    Surface { surface: WlSurface, origin: Point<f64, Logical>, window: Option<Window>, layer: Option<LayerSurface> },
     /// A compositor-drawn title bar.
     TitleBar(Window),
     /// The close button on a compositor-drawn title bar.
@@ -49,7 +45,17 @@ impl PointerHit {
     }
 }
 
-/// Whether the compositor draws a title bar for this window.
+/// Whether this window gets a compositor title bar when not fullscreen.
+pub fn wants_ssd(window: &Window) -> bool {
+    match window.underlying_surface() {
+        WindowSurface::Wayland(t) => {
+            t.with_committed_state(|state| state.is_some_and(|s| s.decoration_mode == Some(DecorationMode::ServerSide)))
+        }
+        WindowSurface::X11(s) => !s.is_decorated() && !s.is_override_redirect(),
+    }
+}
+
+/// Whether the compositor currently draws a title bar for this window.
 pub fn has_ssd(window: &Window) -> bool {
     match window.underlying_surface() {
         WindowSurface::Wayland(t) => t.with_committed_state(|state| {
@@ -66,10 +72,7 @@ pub fn has_ssd(window: &Window) -> bool {
 
 impl XrossState {
     pub fn window_for_surface(&self, surface: &WlSurface) -> Option<Window> {
-        self.space
-            .elements()
-            .find(|w| w.wl_surface().is_some_and(|s| &*s == surface))
-            .cloned()
+        self.space.elements().find(|w| w.wl_surface().is_some_and(|s| &*s == surface)).cloned()
     }
 
     /// Usable area of the (single) output: output geometry minus layer-shell exclusive zones.
@@ -100,6 +103,7 @@ impl XrossState {
         }
         self.space.map_element(window.clone(), loc, false);
         self.focus_window(Some(&window), SERIAL_COUNTER.next_serial());
+        self.apply_initial_state(&window);
     }
 
     /// Raise + activate a window and give it keyboard focus. `None` clears focus.
@@ -129,20 +133,13 @@ impl XrossState {
 
     /// Focus the top-most window (after the focused one went away).
     pub fn focus_top_window(&mut self) {
-        let top = self
-            .space
-            .elements()
-            .rev()
-            .find(|w| !w.x11_surface().is_some_and(|x| x.is_override_redirect()))
-            .cloned();
+        let top =
+            self.space.elements().rev().find(|w| !w.x11_surface().is_some_and(|x| x.is_override_redirect())).cloned();
         self.focus_window(top.as_ref(), SERIAL_COUNTER.next_serial());
     }
 
     pub fn focused_window(&self) -> Option<Window> {
-        self.seat
-            .get_keyboard()?
-            .current_focus()
-            .and_then(|f| f.window().cloned())
+        self.seat.get_keyboard()?.current_focus().and_then(|f| f.window().cloned())
     }
 
     /// Ask a window to close (xdg close / WM_DELETE_WINDOW).
@@ -166,23 +163,40 @@ impl XrossState {
             let rel = pos - output_loc.to_f64();
             let layer = layers.layer_under(layer_kind, rel)?;
             let layer_loc = layers.layer_geometry(layer)?.loc + output_loc;
-            layer
-                .surface_under(pos - layer_loc.to_f64(), WindowSurfaceType::ALL)
-                .map(|(surface, loc)| PointerHit::Surface {
+            layer.surface_under(pos - layer_loc.to_f64(), WindowSurfaceType::ALL).map(|(surface, loc)| {
+                PointerHit::Surface {
                     surface,
                     origin: (loc + layer_loc).to_f64(),
                     window: None,
                     layer: Some(layer.clone()),
-                })
+                }
+            })
         };
 
-        if let Some(hit) = layer_hit(Layer::Overlay).or_else(|| layer_hit(Layer::Top)) {
+        // Same order as rendering: a fullscreen window on top covers the Top layer.
+        let fullscreen_on_top = self.fullscreen_on_top();
+        if let Some(hit) = layer_hit(Layer::Overlay) {
+            return Some(hit);
+        }
+        if !fullscreen_on_top && let Some(hit) = layer_hit(Layer::Top) {
             return Some(hit);
         }
         if let Some(hit) = self.window_hit(pos) {
             return Some(hit);
         }
+        if fullscreen_on_top && let Some(hit) = layer_hit(Layer::Top) {
+            return Some(hit);
+        }
         layer_hit(Layer::Bottom).or_else(|| layer_hit(Layer::Background))
+    }
+
+    /// Whether the top-most window is fullscreen.
+    pub fn fullscreen_on_top(&self) -> bool {
+        self.space
+            .elements()
+            .rev()
+            .find(|w| !w.x11_surface().is_some_and(|x| x.is_override_redirect()))
+            .is_some_and(snap::is_fullscreen)
     }
 
     fn window_hit(&self, pos: Point<f64, Logical>) -> Option<PointerHit> {
@@ -192,8 +206,12 @@ impl XrossState {
 
             if has_ssd(window) {
                 match ssd::hit_test(Rectangle::new(loc, geo.size), pos) {
-                    Some(ssd::DecorationHit::Close) => return Some(PointerHit::CloseButton(window.clone())),
-                    Some(ssd::DecorationHit::TitleBar) => return Some(PointerHit::TitleBar(window.clone())),
+                    Some(ssd::DecorationHit::Close) => {
+                        return Some(PointerHit::CloseButton(window.clone()));
+                    }
+                    Some(ssd::DecorationHit::TitleBar) => {
+                        return Some(PointerHit::TitleBar(window.clone()));
+                    }
                     None => {}
                 }
             }

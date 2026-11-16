@@ -36,7 +36,7 @@ pub enum Action {
     SpawnTerminal,
     Quit,
     /// Mod+arrow. Left/Right snap to halves, Up maximizes, Down restores floating;
-    /// a quick follow-up turns a half into a quadrant (stage 3).
+    /// a quick follow-up turns a half into a quadrant (see `input::combo`).
     Snap(Dir),
     /// Workspace-mod+arrow: move to the adjacent workspace (stage 4).
     Workspace(Dir),

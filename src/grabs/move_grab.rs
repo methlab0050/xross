@@ -2,17 +2,22 @@
 
 use smithay::{
     desktop::Window,
-    input::pointer::{ButtonEvent, GrabStartData as PointerGrabStartData, MotionEvent, PointerGrab, PointerInnerHandle},
+    input::pointer::{
+        ButtonEvent, GrabStartData as PointerGrabStartData, MotionEvent, PointerGrab, PointerInnerHandle,
+    },
     reexports::wayland_server::protocol::wl_surface::WlSurface,
     utils::{Logical, Point, Rectangle},
 };
 
-use crate::state::XrossState;
+use crate::{shell::snap::UNSNAP_THRESHOLD, state::XrossState};
 
 pub struct MoveSurfaceGrab {
     pub start_data: PointerGrabStartData<XrossState>,
     pub window: Window,
     pub initial_window_location: Point<i32, Logical>,
+    /// The window is snapped; it stays put (so a click just focuses it) until the
+    /// pointer passes [`UNSNAP_THRESHOLD`], then floats at its old size.
+    pub unsnap: bool,
 }
 
 impl PointerGrab<XrossState> for MoveSurfaceGrab {
@@ -27,9 +32,17 @@ impl PointerGrab<XrossState> for MoveSurfaceGrab {
         handle.motion(data, None, event);
 
         let delta = event.location - self.start_data.location;
+        if self.unsnap {
+            if delta.x.hypot(delta.y) < UNSNAP_THRESHOLD {
+                return;
+            }
+            self.unsnap = false;
+            self.initial_window_location = data.unsnap_for_drag(&self.window, self.start_data.location);
+        }
+
         let new_location = (self.initial_window_location.to_f64() + delta).to_i32_round();
         if let Some(x11) = self.window.x11_surface() {
-            let _ = x11.configure(Some(Rectangle::new(new_location, self.window.geometry().size)));
+            let _ = x11.configure(Some(Rectangle::new(new_location, x11.geometry().size)));
         }
         data.space.map_element(self.window.clone(), new_location, true);
     }

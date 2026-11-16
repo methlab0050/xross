@@ -13,7 +13,10 @@ use smithay::{
     xwayland::XWaylandClientData,
 };
 
-use crate::{grabs::resize_grab, state::{ClientState, XrossState}};
+use crate::{
+    grabs::resize_grab,
+    state::{ClientState, XrossState},
+};
 
 impl CompositorHandler for XrossState {
     fn compositor_state(&mut self) -> &mut CompositorState {
@@ -35,11 +38,7 @@ impl CompositorHandler for XrossState {
             while let Some(parent) = get_parent(&root) {
                 root = parent;
             }
-            if let Some(window) = self
-                .space
-                .elements()
-                .find(|w| w.wl_surface().is_some_and(|s| *s == root))
-            {
+            if let Some(window) = self.space.elements().find(|w| w.wl_surface().is_some_and(|s| *s == root)) {
                 window.on_commit();
             }
         }

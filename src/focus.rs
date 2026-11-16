@@ -57,13 +57,7 @@ impl IsAlive for KeyboardFocusTarget {
 }
 
 impl KeyboardTarget<XrossState> for KeyboardFocusTarget {
-    fn enter(
-        &self,
-        seat: &Seat<XrossState>,
-        data: &mut XrossState,
-        keys: Vec<KeysymHandle<'_>>,
-        serial: Serial,
-    ) {
+    fn enter(&self, seat: &Seat<XrossState>, data: &mut XrossState, keys: Vec<KeysymHandle<'_>>, serial: Serial) {
         self.inner().enter(seat, data, keys, serial)
     }
 
@@ -83,13 +77,7 @@ impl KeyboardTarget<XrossState> for KeyboardFocusTarget {
         self.inner().key(seat, data, key, state, serial, time)
     }
 
-    fn modifiers(
-        &self,
-        seat: &Seat<XrossState>,
-        data: &mut XrossState,
-        modifiers: ModifiersState,
-        serial: Serial,
-    ) {
+    fn modifiers(&self, seat: &Seat<XrossState>, data: &mut XrossState, modifiers: ModifiersState, serial: Serial) {
         self.inner().modifiers(seat, data, modifiers, serial)
     }
 }
@@ -132,9 +120,6 @@ impl From<PopupKind> for KeyboardFocusTarget {
 /// Needed by `PopupManager::grab_popup` (pointer focus is derived from the popup root).
 impl From<KeyboardFocusTarget> for WlSurface {
     fn from(target: KeyboardFocusTarget) -> Self {
-        target
-            .wl_surface()
-            .map(Cow::into_owned)
-            .expect("keyboard focus target without a wl_surface")
+        target.wl_surface().map(Cow::into_owned).expect("keyboard focus target without a wl_surface")
     }
 }

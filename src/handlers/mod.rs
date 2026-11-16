@@ -39,9 +39,7 @@ impl SeatHandler for XrossState {
 
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&KeyboardFocusTarget>) {
         let dh = &self.display_handle;
-        let client = focused
-            .and_then(WaylandFocus::wl_surface)
-            .and_then(|s| dh.get_client(s.id()).ok());
+        let client = focused.and_then(WaylandFocus::wl_surface).and_then(|s| dh.get_client(s.id()).ok());
         set_data_device_focus(dh, seat, client.clone());
         set_primary_focus(dh, seat, client);
     }
@@ -61,7 +59,14 @@ impl SelectionHandler for XrossState {
         }
     }
 
-    fn send_selection(&mut self, ty: SelectionTarget, mime_type: String, fd: OwnedFd, _seat: Seat<Self>, _user_data: &()) {
+    fn send_selection(
+        &mut self,
+        ty: SelectionTarget,
+        mime_type: String,
+        fd: OwnedFd,
+        _seat: Seat<Self>,
+        _user_data: &(),
+    ) {
         if let Some(xwm) = self.xwm.as_mut()
             && let Err(err) = xwm.send_selection(ty, mime_type, fd)
         {

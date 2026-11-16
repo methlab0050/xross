@@ -29,20 +29,13 @@ pub enum DecorationHit {
 
 /// Title bar rectangle for a window whose content occupies `content`.
 pub fn title_rect(content: Rectangle<i32, Logical>) -> Rectangle<i32, Logical> {
-    Rectangle::new(
-        (content.loc.x, content.loc.y - TITLE_HEIGHT).into(),
-        (content.size.w, TITLE_HEIGHT).into(),
-    )
+    Rectangle::new((content.loc.x, content.loc.y - TITLE_HEIGHT).into(), (content.size.w, TITLE_HEIGHT).into())
 }
 
 pub fn close_rect(content: Rectangle<i32, Logical>) -> Rectangle<i32, Logical> {
     let bar = title_rect(content);
     Rectangle::new(
-        (
-            bar.loc.x + bar.size.w - CLOSE_MARGIN - CLOSE_SIZE,
-            bar.loc.y + CLOSE_MARGIN,
-        )
-            .into(),
+        (bar.loc.x + bar.size.w - CLOSE_MARGIN - CLOSE_SIZE, bar.loc.y + CLOSE_MARGIN).into(),
         (CLOSE_SIZE, CLOSE_SIZE).into(),
     )
 }
@@ -58,11 +51,7 @@ pub fn hit_test(content: Rectangle<i32, Logical>, pos: Point<f64, Logical>) -> O
         (close.loc.x - CLOSE_MARGIN, bar.loc.y).into(),
         (bar.loc.x + bar.size.w - (close.loc.x - CLOSE_MARGIN), TITLE_HEIGHT).into(),
     );
-    if close_zone.to_f64().contains(pos) {
-        Some(DecorationHit::Close)
-    } else {
-        Some(DecorationHit::TitleBar)
-    }
+    if close_zone.to_f64().contains(pos) { Some(DecorationHit::Close) } else { Some(DecorationHit::TitleBar) }
 }
 
 /// Per-window decoration buffers, kept in the window's user data so their ids and
@@ -87,25 +76,17 @@ pub fn render_elements(
     scale: Scale<f64>,
     style: DecorationStyle,
 ) -> Vec<SolidColorRenderElement> {
-    window
-        .user_data()
-        .insert_if_missing(|| RefCell::new(DecorationBuffers::default()));
-    let mut bufs = window
-        .user_data()
-        .get::<RefCell<DecorationBuffers>>()
-        .unwrap()
-        .borrow_mut();
+    window.user_data().insert_if_missing(|| RefCell::new(DecorationBuffers::default()));
+    let mut bufs = window.user_data().get::<RefCell<DecorationBuffers>>().unwrap().borrow_mut();
 
     let bar = title_rect(content);
     let close = close_rect(content);
-    bufs.bar
-        .update(bar.size, if style.focused { BAR_FOCUSED } else { BAR_UNFOCUSED });
-    bufs.close.update(
-        Size::from((CLOSE_SIZE, CLOSE_SIZE)),
-        if style.close_hovered { CLOSE_HOVER } else { CLOSE_COLOR },
-    );
+    bufs.bar.update(bar.size, if style.focused { BAR_FOCUSED } else { BAR_UNFOCUSED });
+    bufs.close
+        .update(Size::from((CLOSE_SIZE, CLOSE_SIZE)), if style.close_hovered { CLOSE_HOVER } else { CLOSE_COLOR });
 
-    let to_phys = |p: Point<i32, Logical>| -> Point<i32, Physical> { (p - output_loc).to_physical_precise_round(scale) };
+    let to_phys =
+        |p: Point<i32, Logical>| -> Point<i32, Physical> { (p - output_loc).to_physical_precise_round(scale) };
 
     vec![
         SolidColorRenderElement::from_buffer(&bufs.close, to_phys(close.loc), scale, 1.0, Kind::Unspecified),

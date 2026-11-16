@@ -1,4 +1,5 @@
 pub mod binds;
+pub mod combo;
 
 use smithay::{
     backend::input::{
@@ -31,7 +32,7 @@ impl XrossState {
         match action {
             Action::SpawnTerminal => self.spawn("foot"),
             Action::Quit => self.loop_signal.stop(),
-            Action::Snap(_) => tracing::info!(?action, "snap layouts arrive in stage 3"),
+            Action::Snap(dir) => self.snap_focused(dir),
             Action::Workspace(_) => tracing::info!(?action, "workspaces arrive in stage 4"),
             Action::SwitcherNext | Action::SwitcherPrev => {
                 tracing::info!(?action, "the window switcher arrives in stage 6")
@@ -59,7 +60,9 @@ impl XrossState {
                 self.on_pointer_relative_motion(event.delta(), event.delta_unaccel(), event.time());
             }
             InputEvent::PointerMotionAbsolute { event, .. } => {
-                let Some(output) = self.space.outputs().next() else { return };
+                let Some(output) = self.space.outputs().next() else {
+                    return;
+                };
                 let output_geo = self.space.output_geometry(output).unwrap();
                 let pos = event.position_transformed(output_geo.size) + output_geo.loc.to_f64();
                 self.on_pointer_motion(pos, Event::time(&event));
@@ -185,7 +188,9 @@ impl XrossState {
             return false;
         }
 
-        let Some(window) = hit.window().cloned() else { return false };
+        let Some(window) = hit.window().cloned() else {
+            return false;
+        };
         if window.x11_surface().is_some_and(|x| x.is_override_redirect()) {
             return false;
         }
@@ -209,7 +214,9 @@ impl XrossState {
                 true
             }
             PointerHit::Surface { .. } if drag_mod && button == BTN_RIGHT => {
-                let Some(loc) = self.space.element_location(&window) else { return true };
+                let Some(loc) = self.space.element_location(&window) else {
+                    return true;
+                };
                 let content = smithay::utils::Rectangle::new(loc, window.geometry().size);
                 let edges = ResizeEdge::from_pointer(content, pos);
                 self.start_resize(window, start(button), edges, serial);
