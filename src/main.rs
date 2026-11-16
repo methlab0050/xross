@@ -1,9 +1,12 @@
 #![allow(irrefutable_let_patterns)]
 
 mod backend;
+mod focus;
 mod grabs;
 mod handlers;
 mod input;
+mod render;
+mod shell;
 mod state;
 
 use input::binds::Profile;
@@ -72,11 +75,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Children (and anything spawned by binds) connect to us, not the host compositor.
     unsafe { std::env::set_var("WAYLAND_DISPLAY", &state.socket_name) };
 
-    if let Some(cmd) = args.command {
-        if let Err(err) = std::process::Command::new("sh").arg("-c").arg(&cmd).spawn() {
-            tracing::warn!(%cmd, %err, "failed to spawn startup command");
-        }
-    }
+    // The startup command runs once Xwayland is ready (or failed), so it inherits DISPLAY.
+    state.pending_startup_commands.extend(args.command);
+    state.start_xwayland();
 
     event_loop.run(None, &mut state, |_| {})?;
     Ok(())

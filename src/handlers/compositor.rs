@@ -1,4 +1,3 @@
-use crate::{XrossState, grabs::resize_grab, state::ClientState};
 use smithay::{
     backend::renderer::utils::on_commit_buffer_handler,
     reexports::wayland_server::{
@@ -7,14 +6,14 @@ use smithay::{
     },
     wayland::{
         buffer::BufferHandler,
-        compositor::{
-            CompositorClientState, CompositorHandler, CompositorState, get_parent, is_sync_subsurface,
-        },
+        compositor::{CompositorClientState, CompositorHandler, CompositorState, get_parent, is_sync_subsurface},
+        seat::WaylandFocus,
         shm::{ShmHandler, ShmState},
     },
+    xwayland::XWaylandClientData,
 };
 
-use super::xdg_shell;
+use crate::{grabs::resize_grab, state::{ClientState, XrossState}};
 
 impl CompositorHandler for XrossState {
     fn compositor_state(&mut self) -> &mut CompositorState {
@@ -22,11 +21,15 @@ impl CompositorHandler for XrossState {
     }
 
     fn client_compositor_state<'a>(&self, client: &'a Client) -> &'a CompositorClientState {
+        if let Some(state) = client.get_data::<XWaylandClientData>() {
+            return &state.compositor_state;
+        }
         &client.get_data::<ClientState>().unwrap().compositor_state
     }
 
     fn commit(&mut self, surface: &WlSurface) {
         on_commit_buffer_handler::<Self>(surface);
+
         if !is_sync_subsurface(surface) {
             let mut root = surface.clone();
             while let Some(parent) = get_parent(&root) {
@@ -35,13 +38,15 @@ impl CompositorHandler for XrossState {
             if let Some(window) = self
                 .space
                 .elements()
-                .find(|w| w.toplevel().unwrap().wl_surface() == &root)
+                .find(|w| w.wl_surface().is_some_and(|s| *s == root))
             {
                 window.on_commit();
             }
-        };
+        }
 
-        xdg_shell::handle_commit(&mut self.popups, &self.space, surface);
+        if !self.handle_layer_commit(surface) {
+            self.handle_xdg_commit(surface);
+        }
         resize_grab::handle_commit(&mut self.space, surface);
     }
 }

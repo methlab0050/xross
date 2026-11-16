@@ -50,6 +50,7 @@ in
     wayland-utils
     wev
     wl-clipboard
+    xclip
     grim
     slurp
     fuzzel
