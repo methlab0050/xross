@@ -2,6 +2,10 @@
 inputs:
   nixpkgs:
     url: github:cachix/devenv-nixpkgs/rolling
+  # Pinned stable channel for libraries that need an older version than rolling,
+  # e.g. libdisplay-info 0.3 (smithay-drm-extras requires < 0.4).
+  nixpkgs-stable:
+    url: github:NixOS/nixpkgs/nixos-26.05
   rust-overlay:
     url: github:oxalica/rust-overlay
     inputs:

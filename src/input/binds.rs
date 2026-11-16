@@ -43,6 +43,8 @@ pub enum Action {
     /// Mod+Tab / Mod+Shift+Tab: MRU switcher (stage 6).
     SwitcherNext,
     SwitcherPrev,
+    /// Ctrl+Alt+F1..F12 on the udev backend.
+    SwitchVt(i32),
 }
 
 /// Modifier set, compared exactly (caps/num lock ignored).
@@ -110,6 +112,13 @@ fn arrow(sym: Keysym) -> Option<Dir> {
     }
 }
 
+/// xkb turns Ctrl+Alt+Fn into XF86Switch_VT_n; `sym` must be the *modified* keysym here.
+pub fn vt_switch(sym: Keysym) -> Option<Action> {
+    let first = Keysym::XF86_Switch_VT_1.raw();
+    let raw = sym.raw();
+    (first..first + 12).contains(&raw).then(|| Action::SwitchVt((raw - first + 1) as i32))
+}
+
 /// `sym` should be the unshifted (raw) keysym, so Shift+Tab arrives as Tab.
 pub fn lookup(profile: Profile, mods: Mods, sym: Keysym) -> Option<Action> {
     if mods == Mods::CTRL && sym == Keysym::grave {
@@ -164,6 +173,13 @@ mod tests {
         assert_eq!(lookup(p, Mods::ALT, Keysym::Tab), Some(Action::SwitcherNext));
         assert_eq!(lookup(p, Mods::SHIFT_ALT, Keysym::Tab), Some(Action::SwitcherPrev));
         assert_eq!(lookup(p, Mods::LOGO, Keysym::Right), None);
+    }
+
+    #[test]
+    fn vt_switch_keysyms() {
+        assert_eq!(vt_switch(Keysym::XF86_Switch_VT_3), Some(Action::SwitchVt(3)));
+        assert_eq!(vt_switch(Keysym::XF86_Switch_VT_12), Some(Action::SwitchVt(12)));
+        assert_eq!(vt_switch(Keysym::F3), None);
     }
 
     #[test]

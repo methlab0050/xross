@@ -36,6 +36,11 @@ impl XrossState {
             Action::SwitcherNext | Action::SwitcherPrev => {
                 tracing::info!(?action, "the window switcher arrives in stage 6")
             }
+            Action::SwitchVt(vt) => {
+                if let Some(udev) = self.udev.as_ref() {
+                    udev.borrow_mut().change_vt(vt);
+                }
+            }
         }
     }
 
@@ -49,7 +54,10 @@ impl XrossState {
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
         match event {
             InputEvent::Keyboard { event, .. } => self.on_keyboard::<I>(event),
-            InputEvent::PointerMotion { .. } => {}
+            InputEvent::PointerMotion { event, .. } => {
+                use smithay::backend::input::PointerMotionEvent;
+                self.on_pointer_relative_motion(event.delta(), event.delta_unaccel(), event.time());
+            }
             InputEvent::PointerMotionAbsolute { event, .. } => {
                 let Some(output) = self.space.outputs().next() else { return };
                 let output_geo = self.space.output_geometry(output).unwrap();
@@ -86,7 +94,9 @@ impl XrossState {
                 }
                 // Match on the unshifted keysym so Shift+Tab is "Tab with Shift held".
                 let sym = handle.raw_latin_sym_or_raw_current_sym().unwrap_or_else(|| handle.modified_sym());
-                match binds::lookup(state.bind_profile, mods.into(), sym) {
+                let action = binds::vt_switch(handle.modified_sym())
+                    .or_else(|| binds::lookup(state.bind_profile, mods.into(), sym));
+                match action {
                     Some(a) => {
                         state.suppressed_keys.insert(keycode);
                         FilterResult::Intercept(FilterAction::Bind(a))
@@ -106,6 +116,28 @@ impl XrossState {
         let under = self.pointer_hit(pos).and_then(|h| h.surface());
         pointer.motion(self, under, &MotionEvent { location: pos, serial, time });
         pointer.frame(self);
+    }
+
+    fn on_pointer_relative_motion(
+        &mut self,
+        delta: Point<f64, Logical>,
+        delta_unaccel: Point<f64, Logical>,
+        time: InputTime,
+    ) {
+        let pointer = self.seat.get_pointer().unwrap();
+        let mut pos = pointer.current_location() + delta;
+        // Keep the pointer on the output.
+        if let Some(geo) = self.space.outputs().next().and_then(|o| self.space.output_geometry(o)) {
+            pos.x = pos.x.clamp(geo.loc.x as f64, (geo.loc.x + geo.size.w) as f64 - 1.0);
+            pos.y = pos.y.clamp(geo.loc.y as f64, (geo.loc.y + geo.size.h) as f64 - 1.0);
+        }
+        let under = self.pointer_hit(pos).and_then(|h| h.surface());
+        pointer.relative_motion(
+            self,
+            under,
+            &smithay::input::pointer::RelativeMotionEvent { delta, delta_unaccel, time },
+        );
+        self.on_pointer_motion(pos, time);
     }
 
     fn on_pointer_button(&mut self, button: u32, state: ButtonState, time: InputTime) {

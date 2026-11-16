@@ -65,6 +65,14 @@ pub struct XrossState {
     /// Commands from `-c`, run once Xwayland is ready (so they get `DISPLAY`).
     pub pending_startup_commands: Vec<String>,
 
+    /// Set by the udev backend; `None` when nested.
+    pub udev: Option<crate::backend::udev::SharedUdev>,
+    /// Draw the cursor ourselves (no host compositor to do it).
+    pub draw_cursor: bool,
+    pub cursor: std::cell::RefCell<crate::cursor::CursorManager>,
+    pub dmabuf_state: smithay::wayland::dmabuf::DmabufState,
+    pub dmabuf_global: Option<smithay::wayland::dmabuf::DmabufGlobal>,
+
     pub bind_profile: Profile,
     /// Keycodes whose press was consumed by a bind; their release is swallowed too.
     pub suppressed_keys: HashSet<Keycode>,
@@ -125,6 +133,12 @@ impl XrossState {
             xwm: None,
             xdisplay: None,
             pending_startup_commands: Vec::new(),
+
+            udev: None,
+            draw_cursor: false,
+            cursor: std::cell::RefCell::new(crate::cursor::CursorManager::new()),
+            dmabuf_state: smithay::wayland::dmabuf::DmabufState::new(),
+            dmabuf_global: None,
 
             bind_profile,
             suppressed_keys: HashSet::new(),

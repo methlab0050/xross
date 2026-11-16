@@ -1,6 +1,7 @@
 #![allow(irrefutable_let_patterns)]
 
 mod backend;
+mod cursor;
 mod focus;
 mod grabs;
 mod handlers;
@@ -23,12 +24,13 @@ struct Args {
     backend: Backend,
     binds: Option<Profile>,
     command: Option<String>,
+    scale: Option<f64>,
 }
 
-const USAGE: &str = "usage: xross [--backend winit|udev] [--binds dev|prod] [-c|--command CMD]";
+const USAGE: &str = "usage: xross [--backend winit|udev] [--binds dev|prod] [--scale FACTOR] [-c|--command CMD]";
 
 fn parse_args() -> Result<Args, String> {
-    let mut args = Args { backend: Backend::Winit, binds: None, command: None };
+    let mut args = Args { backend: Backend::Winit, binds: None, command: None, scale: None };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
         let mut value = || it.next().ok_or_else(|| format!("{flag} needs a value\n{USAGE}"));
@@ -42,6 +44,10 @@ fn parse_args() -> Result<Args, String> {
             }
             "--binds" => args.binds = Some(value()?.parse()?),
             "-c" | "--command" => args.command = Some(value()?),
+            "--scale" => {
+                let v = value()?;
+                args.scale = Some(v.parse().map_err(|_| format!("invalid scale '{v}'"))?);
+            }
             "-h" | "--help" => {
                 println!("{USAGE}");
                 std::process::exit(0);
@@ -68,7 +74,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match args.backend {
         Backend::Winit => backend::winit::init_winit(&mut event_loop, &mut state)?,
-        Backend::Udev => return Err("udev backend is not implemented yet (stage 2)".into()),
+        Backend::Udev => backend::udev::init_udev(&mut event_loop, &mut state, args.scale)?,
     }
 
     tracing::info!(socket = ?state.socket_name, ?profile, "xross started");

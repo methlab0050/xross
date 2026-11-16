@@ -8,12 +8,29 @@ license = "MIT"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 bitflags = "2"
+xcursor = "0.3"
+
+[dependencies.smithay-drm-extras]
+git = "https://github.com/Smithay/smithay.git"
+rev = "fd8e3f50f9556aa6c0485989d1d49ff2c5eefae1"
 
 [dependencies.smithay]
 git = "https://github.com/Smithay/smithay.git"
 rev = "fd8e3f50f9556aa6c0485989d1d49ff2c5eefae1"
 default-features = false
-features = ["backend_winit", "wayland_frontend", "desktop", "xwayland"]
+features = [
+    "backend_winit",
+    "backend_drm",
+    "backend_gbm",
+    "backend_egl",
+    "backend_libinput",
+    "backend_session_libseat",
+    "backend_udev",
+    "renderer_gl",
+    "wayland_frontend",
+    "desktop",
+    "xwayland",
+]
 
 [profile.dev.package."*"]
 opt-level = 2

@@ -3,7 +3,10 @@
 
 use smithay::{
     backend::renderer::{
-        element::{AsRenderElements, solid::SolidColorRenderElement, surface::WaylandSurfaceRenderElement},
+        element::{
+            AsRenderElements, memory::MemoryRenderBufferRenderElement, solid::SolidColorRenderElement,
+            surface::WaylandSurfaceRenderElement,
+        },
         gles::GlesRenderer,
     },
     desktop::layer_map_for_output,
@@ -24,6 +27,7 @@ smithay::backend::renderer::element::render_elements! {
     pub OutputRenderElement<=GlesRenderer>;
     Surface=WaylandSurfaceRenderElement<GlesRenderer>,
     Solid=SolidColorRenderElement,
+    Memory=MemoryRenderBufferRenderElement<GlesRenderer>,
 }
 
 pub const CLEAR_COLOR: [f32; 4] = [0.08, 0.08, 0.10, 1.0];
@@ -36,10 +40,21 @@ impl XrossState {
         let scale = Scale::from(output.current_scale().fractional_scale());
         let mut elements = Vec::new();
 
+        let pointer_pos = self.seat.get_pointer().unwrap().current_location();
+        if self.draw_cursor && output_geo.to_f64().contains(pointer_pos) {
+            elements.extend(self.cursor.borrow_mut().render_elements(
+                renderer,
+                &self.cursor_status,
+                pointer_pos - output_geo.loc.to_f64(),
+                scale,
+                self.start_time.elapsed(),
+            ));
+        }
+
         // Must run before locking the layer map below (pointer_hit locks it too).
         let focused = self.focused_window();
         let hovered_close = self
-            .pointer_hit(self.seat.get_pointer().unwrap().current_location())
+            .pointer_hit(pointer_pos)
             .and_then(|h| match h {
                 PointerHit::CloseButton(w) => Some(w),
                 _ => None,
@@ -95,5 +110,29 @@ impl XrossState {
         push_layers(renderer, &mut elements, Layer::Bottom);
         push_layers(renderer, &mut elements, Layer::Background);
         elements
+    }
+}
+
+impl XrossState {
+    /// Per-frame housekeeping after rendering an output: frame callbacks and cleanup.
+    pub fn post_render(&mut self, output: &Output) {
+        let now = self.start_time.elapsed();
+        let throttle = Some(std::time::Duration::ZERO);
+        for window in self.space.elements() {
+            window.send_frame(output, now, throttle, |_, _| Some(output.clone()));
+        }
+        for layer in layer_map_for_output(output).layers() {
+            smithay::desktop::utils::send_frames_surface_tree(layer.wl_surface(), output, now, throttle, |_, _| {
+                Some(output.clone())
+            });
+        }
+        if let smithay::input::pointer::CursorImageStatus::Surface(surface) = &self.cursor_status {
+            smithay::desktop::utils::send_frames_surface_tree(surface, output, now, throttle, |_, _| Some(output.clone()));
+        }
+
+        self.space.refresh();
+        self.popups.cleanup();
+        layer_map_for_output(output).cleanup();
+        let _ = self.display_handle.flush_clients();
     }
 }

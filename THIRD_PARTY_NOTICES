@@ -1,3 +1,4 @@
+resources/cursor.rgba is from Smithay's anvil example (same rev, MIT license below).
 src/grabs, src/handlers, src/state.rs, src/input/mod.rs and src/backend/winit.rs started as copies of Smithay's
 'smallvil' example (rev fd8e3f50f9556aa6c0485989d1d49ff2c5eefae1), used under the MIT license below.
 

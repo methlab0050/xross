@@ -1,13 +1,11 @@
 //! Nested backend: xross runs as a window inside the host compositor.
 
-use std::time::Duration;
-
 use smithay::{
     backend::{
         renderer::{damage::OutputDamageTracker, gles::GlesRenderer},
         winit::{self, WinitEvent},
     },
-    desktop::{layer_map_for_output, utils::send_frames_surface_tree},
+    desktop::layer_map_for_output,
     output::{Mode, Output, PhysicalProperties, Subpixel},
     reexports::calloop::EventLoop,
     utils::Transform,
@@ -70,21 +68,7 @@ pub fn init_winit(
                 Err(err) => tracing::warn!(?err, "render failed"),
             }
 
-            let now = state.start_time.elapsed();
-            for window in state.space.elements() {
-                window.send_frame(&output, now, Some(Duration::ZERO), |_, _| Some(output.clone()));
-            }
-            for layer in layer_map_for_output(&output).layers() {
-                send_frames_surface_tree(layer.wl_surface(), &output, now, Some(Duration::ZERO), |_, _| {
-                    Some(output.clone())
-                });
-            }
-
-            state.space.refresh();
-            state.popups.cleanup();
-            layer_map_for_output(&output).cleanup();
-            let _ = state.display_handle.flush_clients();
-
+            state.post_render(&output);
             backend.window().request_redraw();
         }
         WinitEvent::CloseRequested => state.loop_signal.stop(),
