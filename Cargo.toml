@@ -1,0 +1,19 @@
+[package]
+name = "xross"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+bitflags = "2"
+
+[dependencies.smithay]
+git = "https://github.com/Smithay/smithay.git"
+rev = "fd8e3f50f9556aa6c0485989d1d49ff2c5eefae1"
+default-features = false
+features = ["backend_winit", "wayland_frontend", "desktop"]
+
+[profile.dev.package."*"]
+opt-level = 2
