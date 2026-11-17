@@ -46,6 +46,8 @@ pub fn init_winit(
         WinitEvent::Input(event) => state.process_input_event(event),
         WinitEvent::Redraw => {
             let age = backend.buffer_age().unwrap_or(0);
+            let size = output.current_mode().unwrap().size;
+            let mut screenshot = None;
             let render_result = {
                 let (renderer, mut framebuffer) = match backend.bind() {
                     Ok(b) => b,
@@ -55,9 +57,16 @@ pub fn init_winit(
                     }
                 };
                 let elements = state.output_elements(renderer, &output);
-                damage_tracker
+                let res = damage_tracker
                     .render_output(renderer, &mut framebuffer, age, &elements, CLEAR_COLOR)
-                    .map(|r| r.damage.cloned())
+                    .map(|r| r.damage.cloned());
+                if let Some(path) = state.screenshot_request.take() {
+                    match crate::screenshot::start(renderer, &framebuffer, size) {
+                        Ok(mapping) => screenshot = Some((mapping, path)),
+                        Err(err) => tracing::warn!(?path, %err, "screenshot failed"),
+                    }
+                }
+                res
             };
             match render_result {
                 Ok(damage) => {
@@ -66,6 +75,12 @@ pub fn init_winit(
                     }
                 }
                 Err(err) => tracing::warn!(?err, "render failed"),
+            }
+            if let Some((mapping, path)) = screenshot {
+                match crate::screenshot::finish(backend.renderer(), &mapping, size, &path) {
+                    Ok(()) => tracing::info!(?path, "saved screenshot"),
+                    Err(err) => tracing::warn!(?path, %err, "screenshot failed"),
+                }
             }
 
             state.post_render(&output);

@@ -36,6 +36,10 @@ pub fn init(state: &mut XrossState) -> Option<PathBuf> {
             match socket.recv(&mut buf) {
                 Ok(n) => {
                     let msg = String::from_utf8_lossy(&buf[..n]);
+                    if let Some(path) = msg.trim().strip_prefix("screenshot ") {
+                        state.screenshot_request = Some(path.trim().into());
+                        continue;
+                    }
                     match msg.trim().parse::<Action>() {
                         Ok(action) => state.run_action(action),
                         Err(err) => tracing::warn!(%err, "bad control message"),
@@ -61,7 +65,14 @@ pub fn init(state: &mut XrossState) -> Option<PathBuf> {
 
 /// Client side of `xross msg`.
 pub fn send(msg: &str) -> Result<(), String> {
-    msg.parse::<Action>()?;
+    let mut msg = msg.to_string();
+    if let Some(path) = msg.strip_prefix("screenshot ") {
+        // The compositor may run elsewhere; give it an absolute path.
+        let abs = std::path::absolute(path.trim()).map_err(|e| e.to_string())?;
+        msg = format!("screenshot {}", abs.display());
+    } else {
+        msg.parse::<Action>()?;
+    }
     let path =
         std::env::var_os(SOCKET_ENV).ok_or_else(|| format!("${SOCKET_ENV} is not set (run this inside xross)"))?;
     let socket = UnixDatagram::unbound().map_err(|e| e.to_string())?;

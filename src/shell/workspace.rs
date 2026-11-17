@@ -106,24 +106,36 @@ impl XrossState {
 
     /// Workspace-mod+arrow: go to the neighbouring workspace, if the rules allow it.
     pub fn switch_workspace(&mut self, dir: Dir) {
+        if self.camera.gesture.is_some() {
+            return;
+        }
         let space = &self.space;
         let Some(to) = self.workspaces.target(dir, |ws| has_windows(space, ws.id)) else {
             tracing::debug!(?dir, from = ?self.workspaces.current(), "workspace move not allowed");
             self.show_workspace_osd();
+            self.bump(dir);
             return;
         };
-        let next_id = &mut self.next_ws_id;
-        self.workspaces.switch_to(to, || Self::new_workspace(next_id));
-        self.finish_switch();
-        self.focus_top_window();
+        self.enter_workspace(to);
+        self.animate_switch();
+    }
+
+    /// Whether the grid rules allow moving from `from` in `dir`.
+    pub fn can_switch_from(&self, from: Coord, dir: Dir) -> bool {
+        let space = &self.space;
+        self.workspaces.target_from(from, dir, |ws| has_windows(space, ws.id)).is_some()
     }
 
     /// Take the focused window along to the neighbouring workspace. Its snap slot comes
     /// with it (displacing windows there by the usual rules).
     pub fn move_window_to_workspace(&mut self, dir: Dir) {
+        if self.camera.gesture.is_some() {
+            return;
+        }
         let Some(window) = self.focused_window().filter(|w| workspace_of(w).is_some()) else {
             return;
         };
+        self.pin_camera();
         let from = self.current_ws();
         let slot = self.slot_of(&window);
 
@@ -146,24 +158,32 @@ impl XrossState {
             }
             self.apply_tiling_change(from, &before, None, false);
         }
-        self.finish_switch();
+        self.enter_workspace(to);
         self.focus_window(Some(&window), SERIAL_COUNTER.next_serial());
+        self.animate_switch();
     }
 
-    /// After landing on a workspace: compact the grid, refresh pointer focus, show the OSD.
-    fn finish_switch(&mut self) {
+    /// The logical part of a switch: make `to` current, move keyboard and pointer focus
+    /// there, show the OSD. The camera animates separately and compaction waits for it.
+    pub fn enter_workspace(&mut self, to: Coord) {
+        self.pin_camera();
         self.snap_combo.cancel();
         self.snap_snapshot = None;
-        let space = &self.space;
-        let dropped = self.workspaces.compact(|ws| has_windows(space, ws.id));
-        tracing::debug!(
-            current = ?self.workspaces.current(),
-            dropped = dropped.len(),
-            grid = %self.grid_map(),
-            "switched workspace",
-        );
+        let next_id = &mut self.next_ws_id;
+        self.workspaces.switch_to(to, || Self::new_workspace(next_id));
+        tracing::debug!(current = ?to, grid = %self.grid_map(), "switched workspace");
+        self.focus_top_window();
         self.refresh_pointer_focus();
         self.show_workspace_osd();
+    }
+
+    /// Drop empty workspaces and close up the grid (once the camera has settled).
+    pub fn compact_workspaces(&mut self) {
+        let space = &self.space;
+        let dropped = self.workspaces.compact(|ws| has_windows(space, ws.id));
+        if !dropped.is_empty() {
+            tracing::debug!(current = ?self.workspaces.current(), grid = %self.grid_map(), "compacted workspaces");
+        }
     }
 
     fn show_workspace_osd(&mut self) {

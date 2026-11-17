@@ -3,8 +3,8 @@ pub mod combo;
 
 use smithay::{
     backend::input::{
-        AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent, InputTime, KeyState,
-        KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
+        AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, GestureBeginEvent, GestureEndEvent, InputBackend,
+        InputEvent, InputTime, KeyState, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
     },
     input::{
         keyboard::FilterResult,
@@ -72,6 +72,19 @@ impl XrossState {
                 self.on_pointer_button(event.button_code(), event.state(), Event::time(&event));
             }
             InputEvent::PointerAxis { event, .. } => self.on_pointer_axis::<I>(event),
+            InputEvent::GestureSwipeBegin { event } => self.on_swipe_begin(event.fingers()),
+            InputEvent::GestureSwipeUpdate { event } => {
+                use smithay::backend::input::GestureSwipeUpdateEvent;
+                if self.active_swipe == Some(3) {
+                    self.gesture_update(event.delta_x(), event.delta_y());
+                }
+            }
+            InputEvent::GestureSwipeEnd { event } => {
+                let fingers = self.active_swipe.take();
+                if fingers == Some(3) {
+                    self.gesture_end(event.cancelled());
+                }
+            }
             _ => {}
         }
     }
@@ -227,7 +240,47 @@ impl XrossState {
         }
     }
 
+    fn on_swipe_begin(&mut self, fingers: u32) {
+        self.active_swipe = Some(fingers);
+        match fingers {
+            3 => self.gesture_begin(false),
+            // 4 fingers: the overview (stage 7). Others aren't forwarded to clients yet.
+            _ => tracing::debug!(fingers, "unhandled swipe"),
+        }
+    }
+
+    /// Nested, real multi-finger swipes never reach us, so the workspace modifier plus a
+    /// two-finger scroll drives the same swipe. Returns true if the event was used.
+    fn emulated_swipe<I: InputBackend>(&mut self, event: &I::PointerAxisEvent) -> bool {
+        if event.source() != AxisSource::Finger || self.active_swipe.is_some() {
+            return false;
+        }
+        let emulating = self.camera.gesture.as_ref().is_some_and(|g| g.emulated);
+        let mods = self.seat.get_keyboard().unwrap().modifier_state();
+        if !emulating && !self.bind_profile.workspace_mod_held(&mods) {
+            return false;
+        }
+        let (h, v) = (event.amount(Axis::Horizontal).unwrap_or(0.0), event.amount(Axis::Vertical).unwrap_or(0.0));
+        if !emulating {
+            if h == 0.0 && v == 0.0 {
+                return true;
+            }
+            self.gesture_begin(true);
+        }
+        if h == 0.0 && v == 0.0 {
+            // Scroll stop: the fingers lifted.
+            self.gesture_end(false);
+        } else {
+            // Scroll amounts move content; fingers move the opposite way (natural scrolling).
+            self.gesture_update(-h, -v);
+        }
+        true
+    }
+
     fn on_pointer_axis<I: InputBackend>(&mut self, event: I::PointerAxisEvent) {
+        if self.emulated_swipe::<I>(&event) {
+            return;
+        }
         let source = event.source();
 
         let horizontal_amount = event

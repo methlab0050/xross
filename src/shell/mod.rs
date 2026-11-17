@@ -1,5 +1,6 @@
 //! Window management: lookups, placement, focus, and hit-testing.
 
+pub mod camera;
 pub mod layer;
 pub mod snap;
 pub mod ssd;
@@ -103,6 +104,7 @@ impl XrossState {
             let _ = x11.configure(Some(Rectangle::new(loc, size)));
         }
         self.adopt_window(&window);
+        snap::start_open_animation(&window, self.start_time.elapsed());
         self.space.map_element(window.clone(), loc, false);
         self.focus_window(Some(&window), SERIAL_COUNTER.next_serial());
         self.apply_initial_state(&window);

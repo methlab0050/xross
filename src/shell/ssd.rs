@@ -75,6 +75,7 @@ pub fn render_elements(
     output_loc: Point<i32, Logical>,
     scale: Scale<f64>,
     style: DecorationStyle,
+    alpha: f32,
 ) -> Vec<SolidColorRenderElement> {
     window.user_data().insert_if_missing(|| RefCell::new(DecorationBuffers::default()));
     let mut bufs = window.user_data().get::<RefCell<DecorationBuffers>>().unwrap().borrow_mut();
@@ -89,8 +90,8 @@ pub fn render_elements(
         |p: Point<i32, Logical>| -> Point<i32, Physical> { (p - output_loc).to_physical_precise_round(scale) };
 
     vec![
-        SolidColorRenderElement::from_buffer(&bufs.close, to_phys(close.loc), scale, 1.0, Kind::Unspecified),
-        SolidColorRenderElement::from_buffer(&bufs.bar, to_phys(bar.loc), scale, 1.0, Kind::Unspecified),
+        SolidColorRenderElement::from_buffer(&bufs.close, to_phys(close.loc), scale, alpha, Kind::Unspecified),
+        SolidColorRenderElement::from_buffer(&bufs.bar, to_phys(bar.loc), scale, alpha, Kind::Unspecified),
     ]
 }
 

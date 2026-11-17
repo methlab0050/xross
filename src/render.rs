@@ -9,6 +9,7 @@ use smithay::{
             memory::MemoryRenderBufferRenderElement,
             solid::{SolidColorBuffer, SolidColorRenderElement},
             surface::WaylandSurfaceRenderElement,
+            utils::{CropRenderElement, RescaleRenderElement},
         },
         gles::GlesRenderer,
     },
@@ -21,7 +22,9 @@ use smithay::{
 use crate::{
     shell::{
         PointerHit, has_ssd,
+        snap::{OPEN_SCALE, open_progress, tick_window_animations},
         ssd::{self, DecorationStyle},
+        workspace::workspace_of,
     },
     state::XrossState,
 };
@@ -29,7 +32,10 @@ use crate::{
 smithay::backend::renderer::element::render_elements! {
     pub OutputRenderElement<=GlesRenderer>;
     Surface=WaylandSurfaceRenderElement<GlesRenderer>,
+    /// Window surfaces: scaled for animations, cropped to their workspace.
+    Window=CropRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>,
     Solid=SolidColorRenderElement,
+    CroppedSolid=CropRenderElement<SolidColorRenderElement>,
     Memory=MemoryRenderBufferRenderElement<GlesRenderer>,
 }
 
@@ -106,22 +112,52 @@ impl XrossState {
             push_layers(renderer, &mut elements, Layer::Top);
         }
 
-        for window in self.visible_windows().rev() {
-            let Some(loc) = self.space.element_location(window) else {
+        let now = self.start_time.elapsed();
+        let views = self.workspace_views(now);
+        let output_size = output_geo.size.to_physical_precise_round(scale);
+        for window in self.space.elements().rev() {
+            // Windows on workspaces out of view are skipped; untagged ones (X11 menus) stick.
+            let offset = match workspace_of(window) {
+                None => Point::default(),
+                Some(ws) => match views.iter().find(|(id, _)| *id == ws) {
+                    Some((_, offset)) => *offset,
+                    None => continue,
+                },
+            };
+            let Some(mut rect) = self.rendered_rect(window, now) else {
                 continue;
             };
-            let geo = window.geometry();
-            let content = Rectangle::new(loc, geo.size);
-            if !output_geo.overlaps(content) && !output_geo.overlaps(ssd::title_rect(content)) {
+            let mut alpha = 1.0f32;
+            if let Some(p) = open_progress(window, now) {
+                alpha = p.clamp(0.0, 1.0) as f32;
+                let k = OPEN_SCALE + (1.0 - OPEN_SCALE) * p;
+                let center = rect.loc + rect.size.to_point().downscale(2.0);
+                rect.size = rect.size.upscale(k);
+                rect.loc = center - rect.size.to_point().downscale(2.0);
+            }
+            // Output-local from here on.
+            rect.loc += offset - output_geo.loc.to_f64();
+            let content = rect.to_i32_round::<i32>();
+            let local_output = Rectangle::from_size(output_geo.size);
+            if !local_output.overlaps(content) && !local_output.overlaps(ssd::title_rect(content)) {
                 continue;
             }
 
-            let render_loc: Point<i32, _> = (loc - geo.loc - output_geo.loc).to_physical_precise_round(scale);
+            // Crop to the window's own workspace so nothing spills into a neighbour mid-slide.
+            let crop = Rectangle::new(offset.to_physical_precise_round(scale), output_size);
+            let geo = window.geometry();
+            let stretch =
+                Scale { x: rect.size.w / geo.size.w.max(1) as f64, y: rect.size.h / geo.size.h.max(1) as f64 };
+            let origin: Point<i32, Physical> = rect.loc.to_physical_precise_round(scale);
+            let surface_loc = origin - geo.loc.to_physical_precise_round(scale);
             elements.extend(
                 window
-                    .render_elements::<WaylandSurfaceRenderElement<GlesRenderer>>(renderer, render_loc, scale, 1.0)
+                    .render_elements::<WaylandSurfaceRenderElement<GlesRenderer>>(renderer, surface_loc, scale, alpha)
                     .into_iter()
-                    .map(OutputRenderElement::Surface),
+                    .filter_map(|e| {
+                        let e = RescaleRenderElement::from_element(e, origin, stretch);
+                        CropRenderElement::from_element(e, scale, crop).map(OutputRenderElement::Window)
+                    }),
             );
 
             if has_ssd(window) {
@@ -130,9 +166,10 @@ impl XrossState {
                     close_hovered: hovered_close.as_ref() == Some(window),
                 };
                 elements.extend(
-                    ssd::render_elements(window, content, output_geo.loc, scale, style)
+                    ssd::render_elements(window, content, Point::default(), scale, style, alpha)
                         .into_iter()
-                        .map(OutputRenderElement::Solid),
+                        .filter_map(|e| CropRenderElement::from_element(e, scale, crop))
+                        .map(OutputRenderElement::CroppedSolid),
                 );
             }
         }
@@ -198,9 +235,16 @@ impl XrossState {
         }
 
         let now = self.start_time.elapsed();
+        self.tick_camera();
+        tick_window_animations(self.space.elements(), now);
+
+        // Frames for every window on screen, including neighbours sliding in.
         let throttle = Some(std::time::Duration::ZERO);
-        for window in self.visible_windows() {
-            window.send_frame(output, now, throttle, |_, _| Some(output.clone()));
+        let in_view: Vec<_> = self.workspace_views(now).into_iter().map(|(id, _)| id).collect();
+        for window in self.space.elements() {
+            if workspace_of(window).is_none_or(|ws| in_view.contains(&ws)) {
+                window.send_frame(output, now, throttle, |_, _| Some(output.clone()));
+            }
         }
         for layer in layer_map_for_output(output).layers() {
             smithay::desktop::utils::send_frames_surface_tree(layer.wl_surface(), output, now, throttle, |_, _| {

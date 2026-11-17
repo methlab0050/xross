@@ -142,6 +142,14 @@ impl Profile {
         }
     }
 
+    /// Whether the workspace modifier is held (extra modifiers allowed).
+    pub fn workspace_mod_held(self, m: &ModifiersState) -> bool {
+        match self {
+            Profile::Dev => m.shift && m.alt,
+            Profile::Prod => m.ctrl && m.logo,
+        }
+    }
+
     /// Whether Mod+drag (move) / Mod+right-drag (resize) is active. Extra modifiers are allowed.
     pub fn drag_mod_held(self, m: &ModifiersState) -> bool {
         match self {

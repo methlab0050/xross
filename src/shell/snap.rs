@@ -1,7 +1,7 @@
 //! Applies the snap layout model ([`crate::layout::snap`]) to real windows:
 //! snap binds, client maximize/fullscreen requests, and un-snapping on drag.
 
-use std::cell::Cell;
+use std::{cell::Cell, time::Duration};
 
 use smithay::{
     desktop::{Window, WindowSurface},
@@ -11,6 +11,8 @@ use smithay::{
     },
     utils::{IsAlive, Logical, Point, Rectangle, Size},
 };
+
+use crate::anim::spring::{Animation, SpringParams};
 
 use super::{
     ssd, wants_ssd,
@@ -30,6 +32,51 @@ struct WinState {
     fullscreen: Cell<bool>,
     /// Requested before the window mapped; applied when it does.
     initial_maximized: Cell<bool>,
+    /// Geometry change in progress (snap, maximize, restore...).
+    geo_anim: Cell<Option<GeoAnim>>,
+    /// Fade/zoom-in after mapping, 0 -> 1.
+    open_anim: Cell<Option<Animation>>,
+}
+
+/// Animates the drawn rect from where the window was to where it's going. Stored
+/// relative to the window's actual location, so it composes with interactive moves.
+#[derive(Debug, Clone, Copy)]
+struct GeoAnim {
+    /// (from - to) as x, y, w, h.
+    delta: (f64, f64, f64, f64),
+    to_size: Size<i32, Logical>,
+    /// Goes 1 -> 0: the fraction of `delta` still to cover.
+    anim: Animation,
+}
+
+pub const WINDOW_SPRING: SpringParams = SpringParams::new(1.0, 700.0, 0.001);
+pub const OPEN_SPRING: SpringParams = SpringParams::new(1.0, 900.0, 0.001);
+/// New windows grow from this scale.
+pub const OPEN_SCALE: f64 = 0.92;
+
+/// Open-animation progress (0 -> 1), while it runs.
+pub fn open_progress(window: &Window, now: Duration) -> Option<f64> {
+    win_state(window).open_anim.get().map(|a| a.value(now))
+}
+
+pub fn start_open_animation(window: &Window, now: Duration) {
+    win_state(window).open_anim.set(Some(Animation::new(0.0, 1.0, 0.0, OPEN_SPRING, now)));
+}
+
+/// Forget finished animations; returns whether any are still running.
+pub fn tick_window_animations<'a>(windows: impl Iterator<Item = &'a Window>, now: Duration) -> bool {
+    let mut running = false;
+    for w in windows {
+        let st = win_state(w);
+        if st.geo_anim.get().is_some_and(|g| g.anim.is_done(now)) {
+            st.geo_anim.set(None);
+        }
+        if st.open_anim.get().is_some_and(|a| a.is_done(now)) {
+            st.open_anim.set(None);
+        }
+        running |= st.geo_anim.get().is_some() || st.open_anim.get().is_some();
+    }
+    running
 }
 
 fn win_state(window: &Window) -> &WinState {
@@ -56,6 +103,38 @@ impl XrossState {
     /// Content rect (excluding any title bar) of a mapped window, in global coordinates.
     pub fn window_rect(&self, window: &Window) -> Option<Rectangle<i32, Logical>> {
         Some(Rectangle::new(self.space.element_location(window)?, window.geometry().size))
+    }
+
+    /// Where the window's content is drawn right now (mid-animation, this differs from
+    /// its actual geometry), in global coordinates.
+    pub fn rendered_rect(&self, window: &Window, now: Duration) -> Option<Rectangle<f64, Logical>> {
+        let loc = self.space.element_location(window)?.to_f64();
+        let Some(g) = win_state(window).geo_anim.get() else {
+            return Some(Rectangle::new(loc, window.geometry().size.to_f64()));
+        };
+        let v = g.anim.value(now);
+        let (dx, dy, dw, dh) = g.delta;
+        Some(Rectangle::new(
+            (loc.x + dx * v, loc.y + dy * v).into(),
+            ((g.to_size.w as f64 + dw * v).max(1.0), (g.to_size.h as f64 + dh * v).max(1.0)).into(),
+        ))
+    }
+
+    /// Start animating from where the window is drawn now to `to` (content rect).
+    fn animate_geometry(&mut self, window: &Window, to: Rectangle<i32, Logical>) {
+        let now = self.start_time.elapsed();
+        if !self.is_visible(window) {
+            return;
+        }
+        let Some(from) = self.rendered_rect(window, now) else { return };
+        let to_f = to.to_f64();
+        let delta =
+            (from.loc.x - to_f.loc.x, from.loc.y - to_f.loc.y, from.size.w - to_f.size.w, from.size.h - to_f.size.h);
+        if [delta.0, delta.1, delta.2, delta.3].iter().all(|d| d.abs() < 1.0) {
+            return;
+        }
+        let anim = Animation::new(1.0, 0.0, 0.0, WINDOW_SPRING, now);
+        win_state(window).geo_anim.set(Some(GeoAnim { delta, to_size: to.size, anim }));
     }
 
     pub fn output_rect(&self) -> Rectangle<i32, Logical> {
@@ -324,6 +403,8 @@ impl XrossState {
             }
         }
         if let Some(rect) = rect {
+            let to_size = size.unwrap_or_else(|| window.geometry().size);
+            self.animate_geometry(window, Rectangle::new(rect.loc, to_size));
             self.space.relocate_element(window, rect.loc);
         }
     }

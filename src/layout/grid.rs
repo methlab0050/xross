@@ -61,8 +61,13 @@ impl<W> Grid<W> {
 
     /// Where a move in `dir` from the current workspace lands, if it is allowed.
     pub fn target(&self, dir: Dir, active: impl Fn(&W) -> bool) -> Option<Coord> {
-        let to = neighbour(self.current, dir);
-        let from_active = active(self.current_ws());
+        self.target_from(self.current, dir, active)
+    }
+
+    /// Like [`Grid::target`], but from any workspace (a missing one counts as inactive).
+    pub fn target_from(&self, from: Coord, dir: Dir, active: impl Fn(&W) -> bool) -> Option<Coord> {
+        let to = neighbour(from, dir);
+        let from_active = self.cells.get(&from).is_some_and(&active);
         let to_active = self.cells.get(&to).is_some_and(&active);
         (from_active || to_active).then_some(to)
     }

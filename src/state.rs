@@ -44,6 +44,7 @@ pub struct XrossState {
     /// The 2D workspace grid; each workspace owns its snap layout.
     pub workspaces: crate::layout::grid::Grid<crate::shell::workspace::Workspace>,
     pub next_ws_id: crate::shell::workspace::WsId,
+    pub camera: crate::shell::camera::Camera,
     /// When the workspace minimap OSD hides (time since start).
     pub ws_osd_until: Option<std::time::Duration>,
     pub ws_osd: std::cell::RefCell<crate::render::OsdBuffers>,
@@ -89,6 +90,10 @@ pub struct XrossState {
     pub suppressed_keys: HashSet<Keycode>,
     /// Pointer buttons whose press the compositor consumed (e.g. close button).
     pub suppressed_buttons: HashSet<u32>,
+    /// Finger count of the touchpad swipe in progress.
+    pub active_swipe: Option<u32>,
+    /// `xross msg screenshot PATH`: saved after the next frame (nested backend only).
+    pub screenshot_request: Option<std::path::PathBuf>,
 }
 
 impl XrossState {
@@ -126,6 +131,7 @@ impl XrossState {
             popups: PopupManager::default(),
             workspaces: crate::layout::grid::Grid::new(crate::shell::workspace::Workspace::new(0)),
             next_ws_id: 0,
+            camera: Default::default(),
             ws_osd_until: None,
             ws_osd: Default::default(),
             snap_combo: Default::default(),
@@ -161,6 +167,8 @@ impl XrossState {
             bind_profile,
             suppressed_keys: HashSet::new(),
             suppressed_buttons: HashSet::new(),
+            active_swipe: None,
+            screenshot_request: None,
         }
     }
 

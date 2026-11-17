@@ -1,5 +1,6 @@
 #![allow(irrefutable_let_patterns)]
 
+mod anim;
 mod backend;
 mod cursor;
 mod focus;
@@ -9,6 +10,7 @@ mod input;
 mod ipc;
 mod layout;
 mod render;
+mod screenshot;
 mod shell;
 mod state;
 
