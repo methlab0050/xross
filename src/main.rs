@@ -35,12 +35,22 @@ struct Args {
     scale: Option<f64>,
     config: Option<std::path::PathBuf>,
     log: Option<std::path::PathBuf>,
+    /// Started as a login session (from a display manager).
+    session: bool,
 }
 
-const USAGE: &str = "usage: xross [--backend winit|udev] [--binds dev|prod] [--scale FACTOR] [--config PATH] [--log PATH] [-c|--command CMD]\n       xross msg ACTION...   (run an action in the running xross, e.g. `xross msg workspace right`)";
+const USAGE: &str = "usage: xross [--session] [--backend winit|udev] [--binds dev|prod] [--scale FACTOR] [--config PATH] [--log PATH] [-c|--command CMD]\n       xross msg ACTION...   (run an action in the running xross, e.g. `xross msg workspace right`)";
 
 fn parse_args() -> Result<Args, String> {
-    let mut args = Args { backend: Backend::Winit, binds: None, command: None, scale: None, config: None, log: None };
+    let mut args = Args {
+        backend: Backend::Winit,
+        binds: None,
+        command: None,
+        scale: None,
+        config: None,
+        log: None,
+        session: false,
+    };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
         let mut value = || it.next().ok_or_else(|| format!("{flag} needs a value\n{USAGE}"));
@@ -51,6 +61,12 @@ fn parse_args() -> Result<Args, String> {
                     "udev" => Backend::Udev,
                     other => return Err(format!("unknown backend '{other}'\n{USAGE}")),
                 }
+            }
+            // A login session (the display manager's session entry): DRM/KMS, and the
+            // session's environment is shared with systemd and D-Bus activated services.
+            "--session" => {
+                args.session = true;
+                args.backend = Backend::Udev;
             }
             "--binds" => args.binds = Some(value()?.parse()?),
             "-c" | "--command" => args.command = Some(value()?),
@@ -108,7 +124,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Children (and anything spawned by binds) connect to us, not the host compositor.
     unsafe { std::env::set_var("WAYLAND_DISPLAY", &state.socket_name) };
 
-    // The startup command runs once Xwayland is ready (or failed), so it inherits DISPLAY.
+    // As a session, tell systemd and D-Bus where our display is, so portals and
+    // D-Bus activated apps connect to us. Not for a run from a TTY next to another
+    // session: that would point the shared user manager away from it.
+    if args.session {
+        unsafe {
+            std::env::set_var("XDG_SESSION_TYPE", "wayland");
+            if std::env::var_os("XDG_CURRENT_DESKTOP").is_none() {
+                std::env::set_var("XDG_CURRENT_DESKTOP", "xross");
+            }
+        }
+        state.pending_startup_commands.insert(
+            0,
+            "dbus-update-activation-environment --systemd WAYLAND_DISPLAY DISPLAY XDG_CURRENT_DESKTOP \
+             XDG_SESSION_TYPE XDG_SESSION_DESKTOP"
+                .into(),
+        );
+    }
+    // Startup commands run once Xwayland is ready (or failed), so they inherit DISPLAY.
     state.pending_startup_commands.extend(args.command);
     let ipc_path = ipc::init(&mut state);
     state.start_xwayland();

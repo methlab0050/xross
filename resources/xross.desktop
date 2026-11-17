@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=xross
+Comment=A stacking Wayland compositor with a 2D workspace grid
+Exec=xross --session
+Type=Application
+DesktopNames=xross
