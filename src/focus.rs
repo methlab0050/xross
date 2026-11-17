@@ -24,6 +24,8 @@ pub enum KeyboardFocusTarget {
     Window(Window),
     Layer(LayerSurface),
     Popup(PopupKind),
+    /// A session lock surface (swaylock).
+    Lock(WlSurface),
 }
 
 impl KeyboardFocusTarget {
@@ -35,6 +37,7 @@ impl KeyboardFocusTarget {
             },
             Self::Layer(l) => l.wl_surface(),
             Self::Popup(p) => p.wl_surface(),
+            Self::Lock(s) => s,
         }
     }
 
@@ -52,6 +55,7 @@ impl IsAlive for KeyboardFocusTarget {
             Self::Window(w) => w.alive(),
             Self::Layer(l) => l.alive(),
             Self::Popup(p) => p.alive(),
+            Self::Lock(s) => s.alive(),
         }
     }
 }
@@ -88,6 +92,7 @@ impl WaylandFocus for KeyboardFocusTarget {
             Self::Window(w) => w.wl_surface(),
             Self::Layer(l) => Some(Cow::Borrowed(l.wl_surface())),
             Self::Popup(p) => Some(Cow::Borrowed(p.wl_surface())),
+            Self::Lock(s) => Some(Cow::Borrowed(s)),
         }
     }
 

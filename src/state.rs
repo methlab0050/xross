@@ -68,6 +68,25 @@ pub struct XrossState {
     pub wlr_data_control_state: WlrDataControlState,
     pub ext_data_control_state: ExtDataControlState,
     pub xwayland_shell_state: XWaylandShellState,
+    pub xdg_activation_state: smithay::wayland::xdg_activation::XdgActivationState,
+    pub cursor_shape_state: smithay::wayland::cursor_shape::CursorShapeManagerState,
+    pub fractional_scale_state: smithay::wayland::fractional_scale::FractionalScaleManagerState,
+    pub viewporter_state: smithay::wayland::viewporter::ViewporterState,
+    pub presentation_state: smithay::wayland::presentation::PresentationState,
+    pub idle_notifier_state: smithay::wayland::idle_notify::IdleNotifierState<Self>,
+    pub idle_inhibit_state: smithay::wayland::idle_inhibit::IdleInhibitManagerState,
+    /// Surfaces currently inhibiting idle (video players, presentations).
+    pub idle_inhibitors: HashSet<smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>,
+    pub session_lock_state: smithay::wayland::session_lock::SessionLockManagerState,
+    pub session_lock: crate::handlers::SessionLock,
+    pub image_capture_source_state: smithay::wayland::image_capture_source::ImageCaptureSourceState,
+    pub output_capture_source_state: smithay::wayland::image_capture_source::OutputCaptureSourceState,
+    pub image_copy_capture_state: smithay::wayland::image_copy_capture::ImageCopyCaptureState,
+    /// Screen captures waiting for their output's next frame.
+    pub pending_captures: Vec<crate::handlers::PendingCapture>,
+    /// Live capture sessions (dropping one stops it).
+    pub capture_sessions: Vec<smithay::wayland::image_copy_capture::Session>,
+    pub wlr_screencopy_state: crate::handlers::WlrScreencopyState,
 
     pub seat: Seat<Self>,
     pub cursor_status: CursorImageStatus,
@@ -125,6 +144,19 @@ impl XrossState {
         let wlr_data_control_state = WlrDataControlState::new::<Self, _>(&dh, Some(&primary_selection_state), |_| true);
         let ext_data_control_state = ExtDataControlState::new::<Self, _>(&dh, Some(&primary_selection_state), |_| true);
         let xwayland_shell_state = XWaylandShellState::new::<Self>(&dh);
+        use smithay::wayland::{
+            cursor_shape::CursorShapeManagerState,
+            fractional_scale::FractionalScaleManagerState,
+            idle_inhibit::IdleInhibitManagerState,
+            idle_notify::IdleNotifierState,
+            image_capture_source::{ImageCaptureSourceState, OutputCaptureSourceState},
+            image_copy_capture::ImageCopyCaptureState,
+            presentation::PresentationState,
+            session_lock::SessionLockManagerState,
+            viewporter::ViewporterState,
+            xdg_activation::XdgActivationState,
+        };
+        let monotonic = smithay::utils::Clock::<smithay::utils::Monotonic>::new().id() as u32;
 
         let mut seat_state = SeatState::new();
         let mut seat: Seat<Self> = seat_state.new_wl_seat(&dh, "seat0");
@@ -136,7 +168,7 @@ impl XrossState {
         Self {
             start_time: std::time::Instant::now(),
             socket_name,
-            display_handle: dh,
+            display_handle: dh.clone(),
             loop_handle: event_loop.handle(),
             loop_signal: event_loop.get_signal(),
 
@@ -164,6 +196,22 @@ impl XrossState {
             wlr_data_control_state,
             ext_data_control_state,
             xwayland_shell_state,
+            xdg_activation_state: XdgActivationState::new::<Self>(&dh),
+            cursor_shape_state: CursorShapeManagerState::new::<Self>(&dh),
+            fractional_scale_state: FractionalScaleManagerState::new::<Self>(&dh),
+            viewporter_state: ViewporterState::new::<Self>(&dh),
+            presentation_state: PresentationState::new::<Self>(&dh, monotonic),
+            idle_notifier_state: IdleNotifierState::new(&dh, event_loop.handle()),
+            idle_inhibit_state: IdleInhibitManagerState::new::<Self>(&dh),
+            idle_inhibitors: HashSet::new(),
+            session_lock_state: SessionLockManagerState::new::<Self, _>(&dh, |_| true),
+            session_lock: Default::default(),
+            image_capture_source_state: ImageCaptureSourceState::new(),
+            output_capture_source_state: OutputCaptureSourceState::new::<Self>(&dh),
+            image_copy_capture_state: ImageCopyCaptureState::new::<Self>(&dh),
+            pending_captures: Vec::new(),
+            capture_sessions: Vec::new(),
+            wlr_screencopy_state: crate::handlers::WlrScreencopyState::new(&dh),
 
             seat,
             cursor_status: CursorImageStatus::default_named(),

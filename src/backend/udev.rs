@@ -50,9 +50,11 @@ use crate::{render::CLEAR_COLOR, state::XrossState};
 // 8-bit formats only: widely supported and fine for an SDR desktop.
 const COLOR_FORMATS: &[Fourcc] = &[Fourcc::Abgr8888, Fourcc::Argb8888];
 
-type GbmDrmOutput = DrmOutput<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, (), DrmDeviceFd>;
+/// Each queued frame carries the presentation-time feedback for what it shows.
+type FrameData = Option<smithay::desktop::utils::OutputPresentationFeedback>;
+type GbmDrmOutput = DrmOutput<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, FrameData, DrmDeviceFd>;
 type GbmDrmOutputManager =
-    DrmOutputManager<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, (), DrmDeviceFd>;
+    DrmOutputManager<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, FrameData, DrmDeviceFd>;
 
 pub struct UdevData {
     pub session: LibSeatSession,
@@ -234,8 +236,8 @@ fn device_added(
     let renderer = unsafe { GlesRenderer::new(context)? };
     let render_formats = renderer.egl_context().dmabuf_render_formats().clone();
 
-    let token = state.loop_handle.insert_source(notifier, |event, _metadata, state| match event {
-        DrmEvent::VBlank(_crtc) => on_vblank(state),
+    let token = state.loop_handle.insert_source(notifier, |event, metadata, state| match event {
+        DrmEvent::VBlank(_crtc) => on_vblank(state, metadata),
         DrmEvent::Error(err) => tracing::error!(?err, "DRM error"),
     })?;
 
@@ -393,7 +395,7 @@ fn schedule_render(state: &XrossState, delay: Duration) {
     });
 }
 
-fn on_vblank(state: &mut XrossState) {
+fn on_vblank(state: &mut XrossState, metadata: &mut Option<smithay::backend::drm::DrmEventMetadata>) {
     let Some(udev) = state.udev.clone() else {
         return;
     };
@@ -402,11 +404,32 @@ fn on_vblank(state: &mut XrossState) {
         let Some(surface) = u.gpu.as_mut().and_then(|g| g.surface.as_mut()) else {
             return;
         };
-        if let Err(err) = surface.drm_output.frame_submitted() {
-            tracing::warn!(?err, "frame_submitted failed");
+        let refresh = surface.output.current_mode().map(|m| m.refresh).unwrap_or(60_000);
+        match surface.drm_output.frame_submitted() {
+            Ok(Some(Some(mut feedback))) => {
+                use smithay::{
+                    backend::drm::DrmEventTime,
+                    reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind,
+                    wayland::presentation::Refresh,
+                };
+                let frame = Duration::from_secs_f64(1000.0 / refresh as f64);
+                // Prefer the kernel's vblank timestamp; fall back to now.
+                let hw_time = metadata.as_ref().and_then(|m| match m.time {
+                    DrmEventTime::Monotonic(t) if !t.is_zero() => Some(t),
+                    _ => None,
+                });
+                let seq = metadata.as_ref().map_or(0, |m| m.sequence as u64);
+                let (time, flags) = match hw_time {
+                    Some(t) => (t, Kind::Vsync | Kind::HwClock | Kind::HwCompletion),
+                    None => (smithay::utils::Clock::<smithay::utils::Monotonic>::new().now().into(), Kind::Vsync),
+                };
+                feedback.presented::<_, smithay::utils::Monotonic>(time, Refresh::fixed(frame), seq, flags);
+            }
+            Ok(_) => {}
+            Err(err) => tracing::warn!(?err, "frame_submitted failed"),
         }
         surface.frame_pending = false;
-        surface.output.current_mode().map(|m| m.refresh).unwrap_or(60_000)
+        refresh
     };
     // Repaint ~60% into the frame: gives clients time to submit buffers for this vblank
     // while leaving the compositor enough time to render (see anvil's rationale).
@@ -448,7 +471,7 @@ fn render(state: &mut XrossState) {
         });
 
     let queued = match result {
-        Ok(true) => match surface.drm_output.queue_frame(()) {
+        Ok(true) => match surface.drm_output.queue_frame(Some(state.presentation_feedback(&output))) {
             Ok(()) => true,
             Err(err) => {
                 tracing::warn!(?err, "failed to queue frame");
@@ -473,6 +496,7 @@ fn render(state: &mut XrossState) {
     surface.frame_pending = queued;
     let refresh = output.current_mode().map(|m| m.refresh).unwrap_or(60_000);
     drop(elements);
+    crate::capture::process(state, renderer, &output);
     drop(guard);
 
     state.post_render(&output);

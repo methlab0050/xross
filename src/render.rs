@@ -14,7 +14,7 @@ use smithay::{
             AsRenderElements, Kind,
             memory::MemoryRenderBufferRenderElement,
             solid::{SolidColorBuffer, SolidColorRenderElement},
-            surface::WaylandSurfaceRenderElement,
+            surface::{WaylandSurfaceRenderElement, render_elements_from_surface_tree},
             utils::{CropRenderElement, RescaleRenderElement},
         },
         gles::GlesRenderer,
@@ -142,6 +142,17 @@ impl XrossState {
     }
 
     pub fn output_elements(&self, renderer: &mut GlesRenderer, output: &Output) -> Vec<OutputRenderElement> {
+        self.output_elements_for(renderer, output, self.draw_cursor)
+    }
+
+    /// Like [`Self::output_elements`], choosing whether to draw the cursor (screen
+    /// captures ask for it either way).
+    pub fn output_elements_for(
+        &self,
+        renderer: &mut GlesRenderer,
+        output: &Output,
+        draw_cursor: bool,
+    ) -> Vec<OutputRenderElement> {
         let Some(output_geo) = self.space.output_geometry(output) else {
             return Vec::new();
         };
@@ -152,7 +163,7 @@ impl XrossState {
         let mut elements = Vec::new();
 
         let pointer_pos = self.seat.get_pointer().unwrap().current_location();
-        if self.draw_cursor && output_geo.to_f64().contains(pointer_pos) {
+        if draw_cursor && output_geo.to_f64().contains(pointer_pos) {
             elements.extend(self.cursor.borrow_mut().render_elements(
                 renderer,
                 &self.cursor_status,
@@ -160,6 +171,25 @@ impl XrossState {
                 scale,
                 now,
             ));
+        }
+
+        // Locked (or locking): the lock surface on black, and nothing else.
+        if self.is_locked() {
+            if let Some(surface) = self.lock_surface() {
+                elements.extend(
+                    render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<GlesRenderer>>(
+                        renderer,
+                        surface,
+                        Point::<i32, Physical>::default(),
+                        scale,
+                        1.0,
+                        Kind::Unspecified,
+                    )
+                    .into_iter()
+                    .map(OutputRenderElement::Surface),
+                );
+            }
+            return elements;
         }
 
         elements.extend(self.switcher_elements(renderer, scale));
@@ -361,6 +391,20 @@ impl XrossState {
         self.tick_overview();
         tick_window_animations(self.space.elements(), now);
 
+        // A frame without any windows is on screen now, so a pending lock is safe.
+        if self.is_locked() {
+            self.confirm_session_lock();
+            if let Some(surface) = self.lock_surface() {
+                smithay::desktop::utils::send_frames_surface_tree(
+                    surface,
+                    output,
+                    now,
+                    Some(std::time::Duration::ZERO),
+                    |_, _| Some(output.clone()),
+                );
+            }
+        }
+
         // Frames for every window on screen, including neighbours sliding in.
         let throttle = Some(std::time::Duration::ZERO);
         let in_view: Vec<_> = self.workspace_views(now).into_iter().filter_map(|v| v.id).collect();
@@ -384,5 +428,35 @@ impl XrossState {
         self.popups.cleanup();
         layer_map_for_output(output).cleanup();
         let _ = self.display_handle.flush_clients();
+    }
+}
+
+impl XrossState {
+    /// Presentation-time feedback for everything drawn on `output` this frame; the
+    /// backend marks it presented at vblank (or discards it if nothing was shown).
+    pub fn presentation_feedback(&self, output: &Output) -> smithay::desktop::utils::OutputPresentationFeedback {
+        use smithay::{
+            desktop::utils::{OutputPresentationFeedback, take_presentation_feedback_surface_tree},
+            reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind,
+        };
+        let mut feedback = OutputPresentationFeedback::new(output);
+        let on_output = |_: &_, _: &_| Some(output.clone());
+        let no_flags = |_: &_, _: &_| Kind::empty();
+
+        if let Some(surface) = self.lock_surface() {
+            take_presentation_feedback_surface_tree(surface, &mut feedback, on_output, no_flags);
+            return feedback;
+        }
+        let now = self.start_time.elapsed();
+        let in_view: Vec<_> = self.workspace_views(now).into_iter().filter_map(|v| v.id).collect();
+        for window in self.space.elements() {
+            if workspace_of(window).is_none_or(|ws| in_view.contains(&ws)) {
+                window.take_presentation_feedback(&mut feedback, on_output, no_flags);
+            }
+        }
+        for layer in layer_map_for_output(output).layers() {
+            layer.take_presentation_feedback(&mut feedback, on_output, no_flags);
+        }
+        feedback
     }
 }

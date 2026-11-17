@@ -11,7 +11,7 @@ use std::time::Duration;
 use super::binds::Dir;
 use crate::layout::snap::{Col, Row, Slot};
 
-pub const COMBO_TIMEOUT: Duration = Duration::from_millis(350);
+pub const COMBO_TIMEOUT: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ComboResult {
@@ -106,7 +106,8 @@ mod tests {
     fn too_slow_is_two_separate_snaps() {
         let mut c = SnapCombo::default();
         c.press(1, Dir::Right, ms(0));
-        assert_eq!(c.press(1, Dir::Up, ms(400)), ComboResult { target: Some(Maximized), rewind: false });
+        let late = COMBO_TIMEOUT + ms(50);
+        assert_eq!(c.press(1, Dir::Up, late), ComboResult { target: Some(Maximized), rewind: false });
     }
 
     #[test]

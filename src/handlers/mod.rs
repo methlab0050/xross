@@ -1,4 +1,10 @@
 mod compositor;
+mod protocols;
+
+mod wlr_screencopy;
+
+pub use protocols::{CaptureTarget, PendingCapture, SessionLock};
+pub use wlr_screencopy::WlrScreencopyState;
 
 use std::os::unix::io::OwnedFd;
 

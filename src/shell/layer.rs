@@ -102,7 +102,7 @@ impl XrossState {
         tracing::trace!(namespace = layer.namespace(), layer = ?layer.layer(), "layer surface committed");
         let wants_focus = layer.cached_state().keyboard_interactivity == KeyboardInteractivity::Exclusive
             && matches!(layer.layer(), Layer::Top | Layer::Overlay);
-        if wants_focus && !self.keyboard_focus_is_layer(&layer) {
+        if wants_focus && !self.is_locked() && !self.keyboard_focus_is_layer(&layer) {
             let keyboard = self.seat.get_keyboard().unwrap();
             keyboard.set_focus(self, Some(KeyboardFocusTarget::Layer(layer)), SERIAL_COUNTER.next_serial());
         }

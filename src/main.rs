@@ -2,6 +2,7 @@
 
 mod anim;
 mod backend;
+mod capture;
 mod cursor;
 mod focus;
 mod grabs;

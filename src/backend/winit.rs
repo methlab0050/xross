@@ -1,5 +1,7 @@
 //! Nested backend: xross runs as a window inside the host compositor.
 
+use std::time::Duration;
+
 use smithay::{
     backend::{
         renderer::{damage::OutputDamageTracker, gles::GlesRenderer},
@@ -68,20 +70,32 @@ pub fn init_winit(
                 }
                 res
             };
+            let mut feedback = state.presentation_feedback(&output);
             match render_result {
                 Ok(damage) => {
                     if let Err(err) = backend.submit(damage.as_deref()) {
                         tracing::warn!(?err, "failed to submit frame");
                     }
+                    // No vblank info nested: call it presented now.
+                    use smithay::{
+                        reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind,
+                        utils::{Clock, Monotonic},
+                        wayland::presentation::Refresh,
+                    };
+                    let refresh = Duration::from_secs_f64(1000.0 / output.current_mode().unwrap().refresh as f64);
+                    feedback.presented(Clock::<Monotonic>::new().now(), Refresh::fixed(refresh), 0, Kind::Vsync);
                 }
                 Err(err) => tracing::warn!(?err, "render failed"),
             }
+            // Both of these leave the GL context without the window surface, so they
+            // run after the frame is submitted.
             if let Some((mapping, path)) = screenshot {
                 match crate::screenshot::finish(backend.renderer(), &mapping, size, &path) {
                     Ok(()) => tracing::info!(?path, "saved screenshot"),
                     Err(err) => tracing::warn!(?path, %err, "screenshot failed"),
                 }
             }
+            crate::capture::process(state, backend.renderer(), &output);
 
             state.post_render(&output);
             backend.window().request_redraw();

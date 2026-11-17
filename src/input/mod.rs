@@ -40,6 +40,9 @@ enum FilterAction {
 
 impl XrossState {
     pub fn run_action(&mut self, action: binds::Action) {
+        if self.is_locked() && !matches!(action, binds::Action::SwitchVt(_)) {
+            return;
+        }
         use binds::Action;
         tracing::debug!(?action, "running bind");
         match action {
@@ -85,6 +88,9 @@ impl XrossState {
     }
 
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
+        // Any input is activity (ext-idle-notify, for swayidle and friends).
+        let seat = self.seat.clone();
+        self.idle_notifier_state.notify_activity(&seat);
         self.dispatch_input_event(event);
         self.run_overview_pending();
     }
@@ -144,6 +150,19 @@ impl XrossState {
             serial,
             time,
             |state, mods, handle| {
+                // Locked: everything goes to the lock surface, except VT switching.
+                if state.is_locked() {
+                    if key_state == KeyState::Released && state.suppressed_keys.remove(&keycode) {
+                        return FilterResult::Intercept(FilterAction::Noop);
+                    }
+                    if key_state == KeyState::Pressed
+                        && let Some(vt) = binds::vt_switch(handle.modified_sym())
+                    {
+                        state.suppressed_keys.insert(keycode);
+                        return FilterResult::Intercept(FilterAction::Bind(vt));
+                    }
+                    return FilterResult::Forward;
+                }
                 // Releasing the switcher's modifier commits (after the filter, since
                 // committing changes keyboard focus). The release itself goes through.
                 if state.switcher_active() && !state.bind_profile.drag_mod_held(mods) {
@@ -368,6 +387,10 @@ impl XrossState {
     }
 
     fn on_swipe_begin(&mut self, fingers: u32) {
+        if self.is_locked() {
+            self.active_swipe = Some(SwipeKind::Other);
+            return;
+        }
         self.mod_tap.spoil();
         let kind = match fingers {
             // In the overview, three fingers pan like two.
@@ -398,7 +421,7 @@ impl XrossState {
             Workspace,
             Overview,
         }
-        if event.source() != AxisSource::Finger || self.active_swipe.is_some() {
+        if event.source() != AxisSource::Finger || self.active_swipe.is_some() || self.is_locked() {
             return false;
         }
         let mods = self.seat.get_keyboard().unwrap().modifier_state();

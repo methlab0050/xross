@@ -9,7 +9,7 @@
 use std::time::Duration;
 
 /// Finger travel (in touchpad "pixels") for one full workspace.
-pub const PX_PER_WORKSPACE: f64 = 300.0;
+pub const PX_PER_WORKSPACE: f64 = 500.0;
 /// Travel before the swipe commits to an axis.
 const LOCK_THRESHOLD_PX: f64 = 12.0;
 /// Velocity is measured over this much recent history.
@@ -134,8 +134,9 @@ mod tests {
         let mut s = SwipeTracker::default();
         s.update(-30.0, 0.0, ms(0));
         s.update(-30.0, 0.0, ms(50));
-        // 30px in 50ms = 0.1 workspace in 0.05s.
-        assert!((s.velocity() - 2.0).abs() < 1e-6);
+        // 30px in 50ms, whatever the sensitivity is tuned to.
+        let expected = 30.0 / PX_PER_WORKSPACE / 0.05;
+        assert!((s.velocity() - expected).abs() < 1e-6);
     }
 
     #[test]

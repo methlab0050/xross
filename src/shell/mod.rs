@@ -114,6 +114,10 @@ impl XrossState {
 
     /// Raise + activate a window and give it keyboard focus. `None` clears focus.
     pub fn focus_window(&mut self, window: Option<&Window>, serial: Serial) {
+        // The lock surface keeps the keyboard until unlock.
+        if self.is_locked() {
+            return;
+        }
         let keyboard = self.seat.get_keyboard().unwrap();
         match window {
             Some(window) => {
@@ -163,6 +167,12 @@ impl XrossState {
     /// overlay/top layers, then windows (incl. title bars), then bottom/background layers.
     pub fn pointer_hit(&self, pos: Point<f64, Logical>) -> Option<PointerHit> {
         // The overview draws everything itself; clients get no pointer focus meanwhile.
+        if self.is_locked() {
+            // Only the lock surface (covering the output) gets the pointer.
+            let surface = self.lock_surface()?.clone();
+            let origin = self.output_rect().loc.to_f64();
+            return Some(PointerHit::Surface { surface, origin, window: None, layer: None });
+        }
         if self.overview_active() {
             return None;
         }

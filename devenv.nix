@@ -56,8 +56,12 @@ in
     wl-clipboard
     xclip
     grim
+    swaylock
+    swayidle
+    wf-recorder
     slurp
     fuzzel
+    swaybg
 
     # dev tools
     cargo-nextest

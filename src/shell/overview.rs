@@ -650,6 +650,12 @@ impl XrossState {
     /// Run deferred overview actions (they change keyboard focus, so they can't run
     /// inside the keyboard filter or mid-button-handling).
     pub fn run_overview_pending(&mut self) {
+        if self.is_locked() {
+            self.overview_toggle_pending = false;
+            self.overview_close_pending = None;
+            self.overview_focus_pending = None;
+            return;
+        }
         if std::mem::take(&mut self.overview_toggle_pending) {
             self.toggle_overview();
         }
