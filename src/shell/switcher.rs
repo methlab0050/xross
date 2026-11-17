@@ -27,7 +27,6 @@ use crate::{
     layout::switcher::{Layout, Session, layout},
     render::OutputRenderElement,
     state::XrossState,
-    ui::text::TextRenderer,
 };
 
 const PANEL_BG: [f32; 4] = [0.15, 0.15, 0.18, 0.96];
@@ -37,12 +36,14 @@ const BORDER: i32 = 2;
 const TITLE_PX: f32 = 13.0;
 const TITLE_COLOR: [u8; 3] = [230, 230, 235];
 
+type TitleImage = (MemoryRenderBuffer, smithay::utils::Size<i32, Logical>, Rectangle<f64, Logical>);
+
 /// Buffers for drawing the switcher, kept across frames so damage stays small.
 #[derive(Default)]
 pub struct SwitcherUi {
-    text: Option<TextRenderer>,
     /// (title, scale) -> rendered text and its logical width.
-    titles: HashMap<(String, i32), (MemoryRenderBuffer, i32)>,
+    /// (title, scale) -> buffer, logical size to draw at, and the whole buffer as a source.
+    titles: HashMap<(String, i32), TitleImage>,
     panel: SolidColorBuffer,
     selected: SolidColorBuffer,
     border: SolidColorBuffer,
@@ -155,40 +156,43 @@ impl XrossState {
             return Vec::new();
         };
         let phys = |p: Point<i32, Logical>| -> Point<i32, Physical> { p.to_physical_precise_round(scale) };
-        let int_scale = scale.x.ceil().max(1.0) as i32;
 
         let mut ui = self.switcher_ui.borrow_mut();
         let ui = &mut *ui;
-        let text = ui.text.get_or_insert_with(TextRenderer::new);
+        let font = crate::config::current().appearance.font.clone();
         let mut elements = Vec::new();
 
         // Titles (front).
         for (window, tile) in session.items().iter().zip(&layout.tiles) {
             let title = window_title(window);
-            let key = (title.clone(), int_scale);
+            let key = (title.clone(), (scale.x * 1000.0).round() as i32);
             if !ui.titles.contains_key(&key)
-                && let Some(img) = text.render(&title, TITLE_PX, tile.title.size.w, int_scale, TITLE_COLOR)
+                && let Some(img) = crate::ui::text::with_font(&font, |t| {
+                    t.render(&title, TITLE_PX, tile.title.size.w, scale.x, TITLE_COLOR)
+                })
             {
                 let buf = MemoryRenderBuffer::from_slice(
                     &img.pixels,
                     Fourcc::Argb8888,
                     (img.width, img.height),
-                    int_scale,
+                    1,
                     Transform::Normal,
                     None,
                 );
-                ui.titles.insert(key.clone(), (buf, img.width / int_scale));
+                let whole = Rectangle::from_size((img.width as f64, img.height as f64).into());
+                ui.titles.insert(key.clone(), (buf, (img.logical_width, img.logical_height).into(), whole));
             }
-            if let Some((buf, w)) = ui.titles.get(&key) {
-                // Centered under the thumbnail.
-                let loc = Point::from((tile.title.loc.x + (tile.title.size.w - *w) / 2, tile.title.loc.y));
+            if let Some((buf, size, whole)) = ui.titles.get(&key) {
+                // Centred under the thumbnail, on a whole physical pixel, at exactly the
+                // image's size (no resampling).
+                let loc = Point::from((tile.title.loc.x + (tile.title.size.w - size.w) / 2, tile.title.loc.y));
                 if let Ok(e) = MemoryRenderBufferRenderElement::from_buffer(
                     renderer,
                     phys(loc).to_f64(),
                     buf,
                     None,
-                    None,
-                    None,
+                    Some(*whole),
+                    Some(*size),
                     Kind::Unspecified,
                 ) {
                     elements.push(OutputRenderElement::Memory(e));

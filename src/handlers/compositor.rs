@@ -31,6 +31,14 @@ impl CompositorHandler for XrossState {
     }
 
     fn commit(&mut self, surface: &WlSurface) {
+        // A window unmapping (null buffer): snapshot it for the close animation while the
+        // renderer still holds its last frame, i.e. before the buffer handler runs. Many
+        // clients unmap before destroying their toplevel, leaving nothing by then.
+        if unmapping(surface)
+            && let Some(window) = self.window_for_surface(surface)
+        {
+            self.start_close_animation(&window);
+        }
         on_commit_buffer_handler::<Self>(surface);
 
         if !is_sync_subsurface(surface) {
@@ -58,4 +66,12 @@ impl ShmHandler for XrossState {
     fn shm_state(&self) -> &ShmState {
         &self.shm_state
     }
+}
+
+/// Whether this commit removes the surface's buffer (the client unmapping it).
+fn unmapping(surface: &WlSurface) -> bool {
+    use smithay::wayland::compositor::{BufferAssignment, SurfaceAttributes, with_states};
+    with_states(surface, |states| {
+        matches!(states.cached_state.get::<SurfaceAttributes>().current().buffer, Some(BufferAssignment::Removed))
+    })
 }

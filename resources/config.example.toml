@@ -20,6 +20,12 @@ commands = []
 # Scale factor; fractional is fine (1.25, 1.5, 2). Unset: 1. `--scale` wins.
 # scale = 1.5
 
+[xwayland]
+# X11 apps blur under fractional scaling. With this on, xross shows their pixels 1:1
+# (sharp) and sets Xft.dpi so they scale themselves; very old apps (bitmap fonts) end
+# up small. Restart X11 apps after changing it.
+native_scaling = false
+
 [layout]
 # Gap around and between snapped windows (logical px).
 gaps = 0
@@ -51,6 +57,21 @@ natural_scroll = true
 [appearance]
 # Behind everything, and between workspaces while they slide.
 background = "#141419"
+# For apps that can either draw their own title bar or use xross's: use xross's.
+server_decorations = true
+# Rounded corners (logical px, 0 for square) and soft shadows, for windows with
+# xross's title bar. Maximized and edge-to-edge snapped windows stay square.
+corner_radius = 10.0
+shadows = true
+shadow_color = "#00000066"
+# How far shadows spread (logical px); bigger is softer.
+shadow_size = 40.0
+# Icon theme for the title bar's close button (any freedesktop theme: Papirus, ...).
+icon_theme = "Adwaita"
+# Font for title bars and the window switcher (a fontconfig name, e.g. "Inter" or
+# "Noto Sans:bold"). Falls back to the default sans font if it isn't installed.
+font = "NotoSans Nerd Font"
+font_size = 12.5
 
 [binds]
 # Extra keybinds: "Modifiers+Key" = "action". They override the built-in binds with

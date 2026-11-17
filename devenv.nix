@@ -57,6 +57,7 @@ in
     wl-clipboard
     xclip
     xdotool
+    xrdb
     grim
     swaylock
     swayidle

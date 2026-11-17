@@ -59,7 +59,7 @@ type GbmDrmOutputManager =
 pub struct UdevData {
     pub session: LibSeatSession,
     primary_gpu: DrmNode,
-    renderer: Option<GlesRenderer>,
+    pub(crate) renderer: Option<GlesRenderer>,
     gpu: Option<Gpu>,
     /// A render timer is armed; avoids piling up redundant timers.
     render_scheduled: bool,

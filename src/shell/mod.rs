@@ -1,6 +1,7 @@
 //! Window management: lookups, placement, focus, and hit-testing.
 
 pub mod camera;
+pub mod closing;
 pub mod layer;
 pub mod overview;
 pub mod snap;

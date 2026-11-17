@@ -50,6 +50,9 @@ impl XrossState {
         let loop_handle = self.loop_handle.clone();
         let res = self.loop_handle.insert_source(xwayland, move |event, _, state| match event {
             XWaylandEvent::Ready { x11_socket, display_number } => {
+                // Before the WM starts: it converts X11 coordinates by this scale.
+                state.xwayland_client = Some(client.clone());
+                state.apply_xwayland_scale();
                 match X11Wm::start_wm(loop_handle.clone(), &display_handle, x11_socket, client.clone()) {
                     Ok(wm) => {
                         state.xwm = Some(wm);
@@ -57,6 +60,7 @@ impl XrossState {
                         // Children (and spawned binds) get DISPLAY from our environment.
                         unsafe { std::env::set_var("DISPLAY", format!(":{display_number}")) };
                         tracing::info!(display = display_number, "Xwayland ready");
+                        state.update_x_resources();
                         state.run_pending_startup_commands();
                     }
                     Err(err) => tracing::error!(?err, "failed to attach X11 window manager"),
@@ -69,6 +73,60 @@ impl XrossState {
         });
         if let Err(err) = res {
             tracing::error!(%err, "failed to insert Xwayland source");
+        }
+    }
+
+    /// The scale X11 apps get. With `xwayland.native_scaling`, the output scale: their
+    /// buffers then map 1:1 to physical pixels (sharp at fractional scales), and they're
+    /// expected to scale themselves (see [`Self::update_x_resources`]). Otherwise 1:
+    /// xross scales them up like any old Wayland client, which blurs at fractional scales.
+    pub fn xwayland_scale(&self) -> f64 {
+        if crate::config::current().xwayland.native_scaling { self.output_scale() } else { 1.0 }
+    }
+
+    /// Apply [`Self::xwayland_scale`] to the Xwayland client, and re-fit X11 windows
+    /// (their logical size changes with it).
+    pub fn apply_xwayland_scale(&mut self) {
+        use smithay::wayland::compositor::CompositorHandler;
+        let Some(client) = self.xwayland_client.clone() else { return };
+        let scale = self.xwayland_scale();
+        let state = self.client_compositor_state(&client);
+        if (state.client_scale() - scale).abs() < 1e-9 {
+            return;
+        }
+        state.set_client_scale(scale);
+        tracing::info!(scale, "Xwayland client scale");
+
+        // Floating X11 windows: tell X where they are in the new coordinates.
+        let x11: Vec<Window> = self.space.elements().filter(|w| w.x11_surface().is_some()).cloned().collect();
+        for w in &x11 {
+            if let (Some(x), Some(loc)) = (w.x11_surface(), self.space.element_location(w))
+                && !x.is_override_redirect()
+            {
+                let _ = x.configure(Some(Rectangle::new(loc, x.geometry().size)));
+            }
+        }
+        self.relayout();
+        self.update_x_resources();
+    }
+
+    /// With native scaling, tell X11 toolkits the DPI and cursor size to use, so they
+    /// draw at the right size themselves. Applies to X11 apps started afterwards.
+    pub fn update_x_resources(&mut self) {
+        if self.xwm.is_none() {
+            return;
+        }
+        let scale = self.xwayland_scale();
+        let dpi = (96.0 * scale).round() as i32;
+        if self.x_resources_dpi == Some(dpi) {
+            return;
+        }
+        self.x_resources_dpi = Some(dpi);
+        let cursor = (24.0 * scale).round() as i32;
+        let cmd = format!("printf 'Xft.dpi: {dpi}\\nXcursor.size: {cursor}\\n' | xrdb -merge");
+        match std::process::Command::new("sh").arg("-c").arg(&cmd).status() {
+            Ok(s) if s.success() => tracing::info!(dpi, cursor, "X resources updated"),
+            _ => tracing::warn!("couldn't run xrdb; X11 apps won't know to scale themselves (install xrdb)"),
         }
     }
 
@@ -115,6 +173,7 @@ impl XwmHandler for XrossState {
 
     fn unmapped_window(&mut self, _xwm: XwmId, surface: X11Surface) {
         if let Some(window) = self.window_for_x11(&surface) {
+            self.start_close_animation(&window);
             let was_focused = self.focused_window().as_ref() == Some(&window);
             self.space.unmap_elem(&window);
             self.forget_window(&window);

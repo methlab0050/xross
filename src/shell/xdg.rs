@@ -41,11 +41,9 @@ impl XdgShellHandler for XrossState {
     }
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
-        // Prefer server-side decorations; clients without xdg-decoration keep drawing their own.
-        surface.with_pending_state(|s| {
-            s.decoration_mode = Some(DecorationMode::ServerSide);
-            s.bounds = Some(self.usable_area().size);
-        });
+        // No decoration mode until the client negotiates one with xdg-decoration: clients
+        // that never do (GTK, ...) always draw their own, and must not get ours on top.
+        surface.with_pending_state(|s| s.bounds = Some(self.usable_area().size));
         // Mapped into the space on its first buffer commit, once its size is known.
         self.unmapped_windows.push(Window::new_wayland_window(surface));
     }
@@ -55,6 +53,7 @@ impl XdgShellHandler for XrossState {
         let Some(window) = self.window_for_surface(surface.wl_surface()) else {
             return;
         };
+        self.start_close_animation(&window);
         let was_focused = self.focused_window().as_ref() == Some(&window);
         self.space.unmap_elem(&window);
         self.forget_window(&window);
@@ -176,11 +175,21 @@ impl XdgShellHandler for XrossState {
     }
 }
 
+/// Our preference for clients that can do either (`appearance.server_decorations`).
+fn preferred_mode() -> DecorationMode {
+    if crate::config::current().appearance.server_decorations {
+        DecorationMode::ServerSide
+    } else {
+        DecorationMode::ClientSide
+    }
+}
+
 impl XdgDecorationHandler for XrossState {
     fn new_decoration(&mut self, toplevel: ToplevelSurface) {
-        toplevel.with_pending_state(|s| s.decoration_mode = Some(DecorationMode::ServerSide));
+        toplevel.with_pending_state(|s| s.decoration_mode = Some(preferred_mode()));
     }
 
+    /// An explicit request from the client is honoured.
     fn request_mode(&mut self, toplevel: ToplevelSurface, mode: DecorationMode) {
         toplevel.with_pending_state(|s| s.decoration_mode = Some(mode));
         if toplevel.is_initial_configure_sent() {
@@ -189,7 +198,7 @@ impl XdgDecorationHandler for XrossState {
     }
 
     fn unset_mode(&mut self, toplevel: ToplevelSurface) {
-        toplevel.with_pending_state(|s| s.decoration_mode = Some(DecorationMode::ServerSide));
+        toplevel.with_pending_state(|s| s.decoration_mode = Some(preferred_mode()));
         if toplevel.is_initial_configure_sent() {
             toplevel.send_pending_configure();
         }

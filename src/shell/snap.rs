@@ -54,7 +54,7 @@ fn window_spring() -> SpringParams {
     a.params(a.window, 0.001)
 }
 
-fn open_spring() -> SpringParams {
+pub fn open_spring() -> SpringParams {
     let a = &crate::config::current().animations;
     a.params(a.open, 0.001)
 }

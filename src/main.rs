@@ -2,6 +2,7 @@
 
 mod anim;
 mod backend;
+mod blur;
 mod capture;
 mod config;
 mod cursor;
@@ -13,6 +14,7 @@ mod ipc;
 mod layout;
 mod render;
 mod screenshot;
+mod shaders;
 mod shell;
 mod state;
 mod ui;

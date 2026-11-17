@@ -13,6 +13,7 @@ png = "0.17"
 ab_glyph = "0.2"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+resvg = { version = "0.45", default-features = false }
 
 [dependencies.smithay-drm-extras]
 git = "https://github.com/Smithay/smithay.git"

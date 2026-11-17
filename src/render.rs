@@ -10,27 +10,29 @@ use std::collections::HashMap;
 
 use smithay::{
     backend::renderer::{
+        Texture,
         element::{
-            AsRenderElements, Kind,
+            AsRenderElements, Element, Kind,
             memory::MemoryRenderBufferRenderElement,
             solid::{SolidColorBuffer, SolidColorRenderElement},
-            surface::{WaylandSurfaceRenderElement, render_elements_from_surface_tree},
+            surface::{WaylandSurfaceRenderElement, WaylandSurfaceTexture, render_elements_from_surface_tree},
             utils::{CropRenderElement, RescaleRenderElement},
         },
         gles::GlesRenderer,
     },
     desktop::{Window, layer_map_for_output},
     output::Output,
-    utils::{Logical, Physical, Point, Rectangle, Scale, Size},
+    utils::{Logical, Physical, Point, Rectangle, Scale, Size, Transform},
     wayland::shell::wlr_layer::Layer,
 };
 
 use crate::{
     layout::grid::Coord,
+    shaders::RoundedElement,
     shell::{
         PointerHit, has_ssd,
         snap::{OPEN_SCALE, open_progress, tick_window_animations},
-        ssd::{self, DecorationStyle},
+        ssd::{self, DecorationElement, DecorationStyle},
         workspace::{WsId, workspace_of},
     },
     state::XrossState,
@@ -42,9 +44,19 @@ smithay::backend::renderer::element::render_elements! {
     /// Window surfaces: scaled for animations and the overview, cropped to their workspace.
     Window=CropRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>,
     Solid=SolidColorRenderElement,
+    /// Window surfaces clipped to rounded corners.
+    RoundedWindow=RoundedElement<CropRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>>,
     /// Title bars, scaled and cropped like their windows.
-    CroppedSolid=CropRenderElement<RescaleRenderElement<SolidColorRenderElement>>,
+    Decoration=CropRenderElement<RescaleRenderElement<DecorationElement>>,
+    /// Title bars as-is (close-animation snapshots).
+    PlainDecoration=DecorationElement,
+    /// The blurred backdrop behind empty workspaces in the overview.
+    Backdrop=smithay::backend::renderer::element::texture::TextureRenderElement<smithay::backend::renderer::gles::GlesTexture>,
+    /// Shadows behind decorated windows.
+    Shadow=CropRenderElement<smithay::backend::renderer::gles::element::PixelShaderElement>,
     Memory=MemoryRenderBufferRenderElement<GlesRenderer>,
+    /// Snapshots of closing windows.
+    Closing=CropRenderElement<smithay::backend::renderer::element::texture::TextureRenderElement<smithay::backend::renderer::gles::GlesTexture>>,
 }
 
 // Workspace minimap OSD.
@@ -59,7 +71,8 @@ const OSD_CURRENT: [f32; 4] = [0.36, 0.56, 0.96, 1.0];
 
 // Overview.
 const TILE_BG: [f32; 4] = [0.12, 0.12, 0.15, 1.0];
-const SLOT_BG: [f32; 4] = [0.10, 0.10, 0.12, 1.0];
+/// Workspaces with windows: their tile is this opaque.
+const ACTIVE_TILE_ALPHA: f32 = 0.5;
 const SLOT_BORDER: [f32; 4] = [0.22, 0.22, 0.26, 1.0];
 const RING: [f32; 4] = [0.36, 0.56, 0.96, 1.0];
 const RING_WIDTH: f64 = 3.0;
@@ -76,8 +89,8 @@ pub struct OsdBuffers {
 #[derive(Default)]
 pub struct OverviewBuffers {
     tiles: HashMap<WsId, SolidColorBuffer>,
-    slots: HashMap<Coord, (SolidColorBuffer, SolidColorBuffer)>,
-    ring: SolidColorBuffer,
+    slots: HashMap<Coord, [SolidColorBuffer; 4]>,
+    ring: [SolidColorBuffer; 4],
 }
 
 fn solid(
@@ -113,29 +126,70 @@ impl XrossState {
             Scale { x: target.size.w / geo.size.w.max(1) as f64, y: target.size.h / geo.size.h.max(1) as f64 };
         let origin: Point<i32, Physical> = target.loc.to_physical_precise_round(scale);
         let surface_loc = origin - geo.loc.to_physical_precise_round(scale);
-        elements.extend(
-            window
-                .render_elements::<WaylandSurfaceRenderElement<GlesRenderer>>(renderer, surface_loc, scale, alpha)
-                .into_iter()
-                .filter_map(|e| {
-                    let e = RescaleRenderElement::from_element(e, origin, stretch);
-                    CropRenderElement::from_element(e, scale, crop).map(OutputRenderElement::Window)
-                }),
-        );
 
-        if let Some(style) = style.filter(|_| has_ssd(window)) {
+        let ssd = has_ssd(window);
+        if style.is_some() {
+            ssd::set_drawn(window, ssd);
+        }
+        // Rounded corners and a shadow for windows with our title bar (not maximized etc.).
+        let shaders = self.shaders(renderer);
+        let rounded = style.is_some() && self.window_rounded(window) && shaders.is_some();
+        let px_scale = scale.x * deco_scale;
+        let radius_px = crate::config::current().appearance.corner_radius * px_scale;
+        let title_h = if ssd { ssd::TITLE_HEIGHT as f64 * deco_scale } else { 0.0 };
+        let frame = Rectangle::new(
+            target.loc - Point::from((0.0, title_h)),
+            target.size + smithay::utils::Size::from((0.0, title_h)),
+        );
+        let clip = frame.to_physical(scale);
+
+        for e in
+            window.render_elements::<WaylandSurfaceRenderElement<GlesRenderer>>(renderer, surface_loc, scale, alpha)
+        {
+            let tex_size = match e.texture() {
+                WaylandSurfaceTexture::Texture(t) if rounded && e.transform() == Transform::Normal => Some(t.size()),
+                _ => None,
+            };
+            let e = RescaleRenderElement::from_element(e, origin, stretch);
+            let Some(e) = CropRenderElement::from_element(e, scale, crop) else { continue };
+            match (tex_size, &shaders) {
+                (Some(size), Some(s)) => elements.push(OutputRenderElement::RoundedWindow(RoundedElement::new(
+                    e,
+                    s.rounded_tex.clone(),
+                    size,
+                    clip,
+                    radius_px,
+                ))),
+                _ => elements.push(OutputRenderElement::Window(e)),
+            }
+        }
+
+        if let (Some(mut style), Some(shaders)) = (style.filter(|_| ssd), shaders.as_ref()) {
+            style.rounded = rounded;
             // Lay the title bar out at full size anchored at the content origin, then
             // scale it around that origin like the content.
             let unscaled = Rectangle::new(target.loc, target.size.downscale(deco_scale)).to_i32_round::<i32>();
             elements.extend(
-                ssd::render_elements(window, unscaled, Point::default(), scale, style, alpha)
+                ssd::render_elements(renderer, shaders, window, unscaled, Point::default(), scale, style, alpha)
                     .into_iter()
                     .filter_map(|e| {
                         let e = RescaleRenderElement::from_element(e, origin, deco_scale);
                         CropRenderElement::from_element(e, scale, crop)
                     })
-                    .map(OutputRenderElement::CroppedSolid),
+                    .map(OutputRenderElement::Decoration),
             );
+        }
+
+        // The shadow goes behind everything else of this window.
+        if rounded
+            && crate::config::current().appearance.shadows
+            && let Some(shaders) = shaders.as_ref()
+        {
+            let radius = crate::config::current().appearance.corner_radius * deco_scale;
+            let shadow = ssd::shadow_element(shaders, window, frame, radius, alpha);
+            if let Some(e) = CropRenderElement::from_element(shadow, scale, crop) {
+                elements.push(OutputRenderElement::Shadow(e));
+            }
         }
     }
 
@@ -239,6 +293,7 @@ impl XrossState {
         }
 
         let views = self.workspace_views(now);
+        self.push_closing_windows(renderer, &mut elements, &views, output_geo, in_overview, scale);
         let full = Rectangle::from_size(output_geo.size.to_f64());
         for window in self.space.elements().rev() {
             if self.is_dragged(window) {
@@ -279,12 +334,20 @@ impl XrossState {
             let style = DecorationStyle {
                 focused: focused.as_ref() == Some(window),
                 close_hovered: hovered_close.as_ref() == Some(window),
+                rounded: false, // decided in push_window
             };
             self.push_window(renderer, &mut elements, window, target, s, crop, alpha, Some(style), scale);
         }
 
         if in_overview {
-            elements.extend(self.overview_backdrop(&views, p.clamp(0.0, 1.0) as f32, scale));
+            // What's behind the tiles, for the blur: wallpaper and other bottom layers.
+            let mut backdrop = Vec::new();
+            push_layers(renderer, &mut backdrop, Layer::Bottom, 1.0);
+            push_layers(renderer, &mut backdrop, Layer::Background, 1.0);
+            let output_size = output_geo.size.to_physical_precise_round(scale);
+            let tiles =
+                self.overview_backdrop(renderer, &views, p.clamp(0.0, 1.0) as f32, scale, output_size, &backdrop);
+            elements.extend(tiles);
         }
 
         if fullscreen_on_top {
@@ -295,42 +358,154 @@ impl XrossState {
         elements
     }
 
+    /// Closing windows, fading and shrinking in place (in front of the live windows).
+    fn push_closing_windows(
+        &self,
+        renderer: &mut GlesRenderer,
+        elements: &mut Vec<OutputRenderElement>,
+        views: &[crate::shell::overview::WsView],
+        output_geo: Rectangle<i32, Logical>,
+        in_overview: bool,
+        scale: Scale<f64>,
+    ) {
+        use crate::shell::closing::CLOSE_SCALE;
+        let now = self.start_time.elapsed();
+        let full = Rectangle::from_size(output_geo.size.to_f64());
+        for closing in self.closing.iter().rev() {
+            let (tile, s) = match closing.workspace {
+                None if in_overview => continue,
+                None => (full, 1.0),
+                Some(ws) => match views.iter().find(|v| v.id == Some(ws)) {
+                    Some(v) => (v.rect, v.scale),
+                    None => continue,
+                },
+            };
+            let p = closing.progress(now);
+            let k = 1.0 - (1.0 - CLOSE_SCALE) * p;
+            let mut rect = closing.rect;
+            let center = rect.loc + rect.size.to_point().downscale(2.0);
+            rect.size = rect.size.upscale(k);
+            rect.loc = center - rect.size.to_point().downscale(2.0);
+            let target =
+                Rectangle::new(tile.loc + (rect.loc - output_geo.loc.to_f64()).upscale(s), rect.size.upscale(s));
+            let element = closing.element(renderer, target, (1.0 - p) as f32, scale);
+            if let Some(e) = CropRenderElement::from_element(element, scale, tile.to_physical_precise_round(scale)) {
+                elements.push(OutputRenderElement::Closing(e));
+            }
+        }
+    }
+
     /// Overview tile backgrounds, drop slots and the selection ring (front to back).
+    /// Workspaces with windows get a half-transparent tile; empty workspaces and slots
+    /// show the blurred backdrop (`backdrop` is what's behind the tiles: wallpaper etc.).
+    #[allow(clippy::too_many_arguments)]
     fn overview_backdrop(
         &self,
+        renderer: &mut GlesRenderer,
         views: &[crate::shell::overview::WsView],
         alpha: f32,
         scale: Scale<f64>,
+        output_size: Size<i32, Physical>,
+        backdrop: &[OutputRenderElement],
     ) -> Vec<OutputRenderElement> {
+        use smithay::backend::renderer::{
+            Renderer,
+            element::{Id, texture::TextureRenderElement},
+        };
         let now = self.start_time.elapsed();
+        let slots = self.slot_views(now);
+        let has_windows = |id: WsId| self.space.elements().any(|w| workspace_of(w) == Some(id));
+        let empty: Vec<_> = views
+            .iter()
+            .filter(|v| v.id.is_some_and(|id| !has_windows(id)))
+            .chain(slots.iter())
+            .map(|v| v.rect)
+            .collect();
+
+        // The blurred backdrop, only if something shows it.
+        let blurred = (!empty.is_empty())
+            .then(|| {
+                let mut blur = self.blur.borrow_mut();
+                if blur.is_none() {
+                    match crate::blur::Blur::new(renderer) {
+                        Ok(b) => *blur = Some(b),
+                        Err(err) => tracing::warn!(?err, "blur shaders failed to compile"),
+                    }
+                }
+                let clear = crate::config::current().background();
+                blur.as_mut()?.render(renderer, backdrop, output_size, scale.x, clear).ok()
+            })
+            .flatten();
+
         let mut ui = self.overview_ui.borrow_mut();
         let ui = &mut *ui;
         let mut out = Vec::new();
-        for v in views {
-            let Some(id) = v.id else { continue };
-            let buf = ui.tiles.entry(id).or_default();
-            out.push(OutputRenderElement::Solid(solid(buf, v.rect, TILE_BG, alpha, scale)));
-        }
-        ui.tiles.retain(|id, _| views.iter().any(|v| v.id == Some(*id)));
 
-        let slots = self.slot_views(now);
-        for s in &slots {
-            let (fill, border) = ui.slots.entry(s.coord).or_default();
-            let inner = Rectangle::new(s.rect.loc + Point::from((2.0, 2.0)), s.rect.size - Size::from((4.0, 4.0)));
-            out.push(OutputRenderElement::Solid(solid(fill, inner, SLOT_BG, alpha, scale)));
-            out.push(OutputRenderElement::Solid(solid(border, s.rect, SLOT_BORDER, alpha, scale)));
-        }
-        ui.slots.retain(|c, _| slots.iter().any(|s| s.coord == *c));
-
+        // Selection ring (an outline, so it doesn't show through transparent tiles).
         if let Some(r) = self.selection_rect(now) {
             let ring = Rectangle::new(
                 r.loc - Point::from((RING_WIDTH, RING_WIDTH)),
                 r.size + Size::from((2.0 * RING_WIDTH, 2.0 * RING_WIDTH)),
             );
-            out.push(OutputRenderElement::Solid(solid(&mut ui.ring, ring, RING, alpha, scale)));
+            out.extend(outline(&mut ui.ring, ring, RING_WIDTH, RING, alpha, scale));
         }
+
+        // Empty workspaces and slots: the blurred backdrop, slots with a faint outline.
+        if let Some(texture) = &blurred {
+            let f = crate::blur::Blur::factor();
+            for rect in &empty {
+                let phys = rect.to_physical(scale);
+                let src =
+                    Rectangle::new((phys.loc.x / f, phys.loc.y / f).into(), (phys.size.w / f, phys.size.h / f).into());
+                out.push(OutputRenderElement::Backdrop(TextureRenderElement::from_static_texture(
+                    Id::new(),
+                    renderer.context_id(),
+                    phys.loc,
+                    texture.clone(),
+                    1,
+                    Transform::Normal,
+                    Some(alpha),
+                    Some(src),
+                    Some(rect.size.to_i32_round()),
+                    None,
+                    Kind::Unspecified,
+                )));
+            }
+        }
+        for s in &slots {
+            let bufs = ui.slots.entry(s.coord).or_default();
+            out.extend(outline(bufs, s.rect, 1.0, SLOT_BORDER, alpha, scale));
+        }
+        ui.slots.retain(|c, _| slots.iter().any(|s| s.coord == *c));
+
+        // Workspaces with windows: a half-transparent tile.
+        for v in views {
+            let Some(id) = v.id.filter(|id| has_windows(*id)) else { continue };
+            let buf = ui.tiles.entry(id).or_default();
+            out.push(OutputRenderElement::Solid(solid(buf, v.rect, TILE_BG, alpha * ACTIVE_TILE_ALPHA, scale)));
+        }
+        ui.tiles.retain(|id, _| views.iter().any(|v| v.id == Some(*id)));
         out
     }
+}
+
+/// A rectangle's outline, `width` thick, drawn inside `rect`.
+fn outline(
+    bufs: &mut [SolidColorBuffer; 4],
+    rect: Rectangle<f64, Logical>,
+    width: f64,
+    color: [f32; 4],
+    alpha: f32,
+    scale: Scale<f64>,
+) -> Vec<OutputRenderElement> {
+    let (x, y, w, h) = (rect.loc.x, rect.loc.y, rect.size.w, rect.size.h);
+    let sides = [
+        Rectangle::new((x, y).into(), (w, width).into()),
+        Rectangle::new((x, y + h - width).into(), (w, width).into()),
+        Rectangle::new((x, y + width).into(), (width, h - 2.0 * width).into()),
+        Rectangle::new((x + w - width, y + width).into(), (width, h - 2.0 * width).into()),
+    ];
+    bufs.iter_mut().zip(sides).map(|(b, r)| OutputRenderElement::Solid(solid(b, r, color, alpha, scale))).collect()
 }
 
 impl XrossState {
@@ -387,6 +562,7 @@ impl XrossState {
         let now = self.start_time.elapsed();
         self.tick_camera();
         self.tick_overview();
+        self.tick_closing();
         tick_window_animations(self.space.elements(), now);
 
         // A frame without any windows is on screen now, so a pending lock is safe.

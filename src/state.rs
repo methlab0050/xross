@@ -84,6 +84,12 @@ pub struct XrossState {
     pub image_copy_capture_state: smithay::wayland::image_copy_capture::ImageCopyCaptureState,
     /// Screen captures waiting for their output's next frame.
     pub pending_captures: Vec<crate::handlers::PendingCapture>,
+    /// Snapshots of windows playing their close animation.
+    pub closing: Vec<crate::shell::closing::ClosingWindow>,
+    /// Custom shaders, compiled on first use.
+    pub shaders: std::cell::RefCell<Option<crate::shaders::Shaders>>,
+    /// Overview blur programs and textures, made on first use.
+    pub blur: std::cell::RefCell<Option<crate::blur::Blur>>,
     /// Live capture sessions (dropping one stops it).
     pub capture_sessions: Vec<smithay::wayland::image_copy_capture::Session>,
     pub wlr_screencopy_state: crate::handlers::WlrScreencopyState,
@@ -93,11 +99,23 @@ pub struct XrossState {
 
     pub xwm: Option<X11Wm>,
     pub xdisplay: Option<u32>,
+    /// The Xwayland client, for its scale (`xwayland.native_scaling`).
+    pub xwayland_client: Option<smithay::reexports::wayland_server::Client>,
+    /// The `Xft.dpi` last given to X11 apps.
+    pub x_resources_dpi: Option<i32>,
     /// Commands from `-c`, run once Xwayland is ready (so they get `DISPLAY`).
     pub pending_startup_commands: Vec<String>,
 
     /// Set by the udev backend; `None` when nested.
     pub udev: Option<crate::backend::udev::SharedUdev>,
+    /// Set by the winit backend; `None` on a TTY.
+    pub winit: Option<
+        std::rc::Rc<
+            std::cell::RefCell<
+                smithay::backend::winit::WinitGraphicsBackend<smithay::backend::renderer::gles::GlesRenderer>,
+            >,
+        >,
+    >,
     /// Draw the cursor ourselves (no host compositor to do it).
     pub draw_cursor: bool,
     pub cursor: std::cell::RefCell<crate::cursor::CursorManager>,
@@ -220,6 +238,9 @@ impl XrossState {
             output_capture_source_state: OutputCaptureSourceState::new::<Self>(&dh),
             image_copy_capture_state: ImageCopyCaptureState::new::<Self>(&dh),
             pending_captures: Vec::new(),
+            closing: Vec::new(),
+            shaders: Default::default(),
+            blur: Default::default(),
             capture_sessions: Vec::new(),
             wlr_screencopy_state: crate::handlers::WlrScreencopyState::new(&dh),
 
@@ -228,9 +249,12 @@ impl XrossState {
 
             xwm: None,
             xdisplay: None,
+            xwayland_client: None,
+            x_resources_dpi: None,
             pending_startup_commands: Vec::new(),
 
             udev: None,
+            winit: None,
             draw_cursor: false,
             cursor: std::cell::RefCell::new(crate::cursor::CursorManager::new()),
             dmabuf_state: smithay::wayland::dmabuf::DmabufState::new(),

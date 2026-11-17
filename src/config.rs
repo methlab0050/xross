@@ -26,6 +26,7 @@ pub struct Config {
     pub general: General,
     pub startup: Startup,
     pub output: OutputConfig,
+    pub xwayland: Xwayland,
     pub layout: Layout,
     pub gestures: Gestures,
     pub animations: Animations,
@@ -65,6 +66,14 @@ pub struct Startup {
 pub struct OutputConfig {
     /// Scale factor, fractional allowed (1.25, 1.5, 2...). Unset: 1. `--scale` wins.
     pub scale: Option<f64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Xwayland {
+    /// Don't scale X11 apps: show their pixels 1:1 (sharp at fractional scales) and have
+    /// them scale themselves via `Xft.dpi` (most toolkits do; very old apps look small).
+    pub native_scaling: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -187,11 +196,38 @@ impl Default for Touchpad {
 pub struct Appearance {
     /// Behind everything (and between workspaces while they slide), as `#rrggbb`.
     pub background: String,
+    /// For apps that can draw their own title bar or use ours: use ours. Apps that only
+    /// do one or the other always get that.
+    pub server_decorations: bool,
+    /// Corner radius of windows with our title bar (logical px); 0 for square.
+    pub corner_radius: f64,
+    /// Soft shadows behind windows with our title bar.
+    pub shadows: bool,
+    /// Shadow colour, `#rrggbbaa`.
+    pub shadow_color: String,
+    /// How far shadows spread (logical px); bigger is softer.
+    pub shadow_size: f64,
+    /// Freedesktop icon theme for the title bar buttons.
+    pub icon_theme: String,
+    /// Font for title bars and the window switcher: a fontconfig name or pattern.
+    pub font: String,
+    /// Title text size (logical px).
+    pub font_size: f64,
 }
 
 impl Default for Appearance {
     fn default() -> Self {
-        Self { background: "#141419".into() }
+        Self {
+            background: "#141419".into(),
+            server_decorations: true,
+            corner_radius: 10.0,
+            shadows: true,
+            shadow_color: "#00000066".into(),
+            shadow_size: 40.0,
+            icon_theme: "Adwaita".into(),
+            font: "NotoSans Nerd Font".into(),
+            font_size: 12.5,
+        }
     }
 }
 
@@ -210,6 +246,12 @@ impl Config {
         let mut out = Vec::new();
         if parse_color(&self.appearance.background).is_none() {
             out.push(format!("appearance.background: '{}' is not #rrggbb", self.appearance.background));
+        }
+        if parse_color(&self.appearance.shadow_color).is_none() {
+            out.push(format!("appearance.shadow_color: '{}' is not #rrggbb(aa)", self.appearance.shadow_color));
+        }
+        if !(0.0..=64.0).contains(&self.appearance.corner_radius) {
+            out.push(format!("appearance.corner_radius: {} is outside 0..64", self.appearance.corner_radius));
         }
         if !(0.05..=1.0).contains(&self.overview.scale) {
             out.push(format!("overview.scale: {} is outside 0.05..1.0", self.overview.scale));
@@ -406,6 +448,7 @@ impl crate::state::XrossState {
         let touchpad = config.touchpad.clone();
         set_current(config);
         self.apply_output_scale();
+        self.apply_xwayland_scale();
 
         if let Some(udev) = self.udev.as_ref() {
             udev.borrow_mut().reconfigure_input(&touchpad);

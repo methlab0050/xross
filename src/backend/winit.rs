@@ -19,10 +19,14 @@ pub fn init_winit(
     event_loop: &mut EventLoop<'static, XrossState>,
     state: &mut XrossState,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (mut backend, winit) = winit::init::<GlesRenderer>()?;
+    let (backend, winit) = winit::init::<GlesRenderer>()?;
     backend.window().set_title("xross (nested)");
+    // Shared so protocol handlers can render too (window snapshots for close animations).
+    let backend = std::rc::Rc::new(std::cell::RefCell::new(backend));
+    state.winit = Some(backend.clone());
+    let size = backend.borrow().window_size();
 
-    let mode = Mode { size: backend.window_size(), refresh: 60_000 };
+    let mode = Mode { size, refresh: 60_000 };
     let output = Output::new(
         "winit".to_string(),
         PhysicalProperties {
@@ -52,6 +56,7 @@ pub fn init_winit(
         }
         WinitEvent::Input(event) => state.process_input_event(event),
         WinitEvent::Redraw => {
+            let mut backend = backend.borrow_mut();
             let age = backend.buffer_age().unwrap_or(0);
             let size = output.current_mode().unwrap().size;
             let mut screenshot = None;
