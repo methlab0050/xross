@@ -45,7 +45,7 @@ use smithay_drm_extras::{
     drm_scanner::{DrmScanEvent, DrmScanner},
 };
 
-use crate::{render::CLEAR_COLOR, state::XrossState};
+use crate::state::XrossState;
 
 // 8-bit formats only: widely supported and fine for an SDR desktop.
 const COLOR_FORMATS: &[Fourcc] = &[Fourcc::Abgr8888, Fourcc::Argb8888];
@@ -61,9 +61,10 @@ pub struct UdevData {
     primary_gpu: DrmNode,
     renderer: Option<GlesRenderer>,
     gpu: Option<Gpu>,
-    output_scale: Option<f64>,
     /// A render timer is armed; avoids piling up redundant timers.
     render_scheduled: bool,
+    /// Input devices, so config changes can be reapplied.
+    input_devices: Vec<smithay::reexports::input::Device>,
 }
 
 pub type SharedUdev = Rc<RefCell<UdevData>>;
@@ -86,6 +87,13 @@ struct OutputSurface {
 }
 
 impl UdevData {
+    /// Reapply touchpad settings to every input device (after a config change).
+    pub fn reconfigure_input(&mut self, touchpad: &crate::config::Touchpad) {
+        for device in &mut self.input_devices {
+            configure_input_device(device, touchpad);
+        }
+    }
+
     pub fn change_vt(&mut self, vt: i32) {
         if let Err(err) = self.session.change_vt(vt) {
             tracing::warn!(?err, vt, "failed to switch VT");
@@ -100,7 +108,6 @@ impl UdevData {
 pub fn init_udev(
     event_loop: &mut EventLoop<'static, XrossState>,
     state: &mut XrossState,
-    output_scale: Option<f64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (session, notifier) = LibSeatSession::new().map_err(|e| format!("could not start a libseat session: {e}"))?;
     let seat_name = session.seat();
@@ -117,8 +124,8 @@ pub fn init_udev(
         primary_gpu,
         renderer: None,
         gpu: None,
-        output_scale,
         render_scheduled: false,
+        input_devices: Vec::new(),
     }));
     state.udev = Some(udev.clone());
     state.draw_cursor = true;
@@ -127,9 +134,15 @@ pub fn init_udev(
     let mut libinput = Libinput::new_with_udev::<LibinputSessionInterface<LibSeatSession>>(session.clone().into());
     libinput.udev_assign_seat(&seat_name).map_err(|()| "failed to assign libinput seat")?;
     let libinput_backend = LibinputInputBackend::new(libinput.clone());
-    event_loop.handle().insert_source(libinput_backend, |mut event, _, state| {
-        if let InputEvent::DeviceAdded { device } = &mut event {
-            configure_input_device(device);
+    let input_udev = udev.clone();
+    event_loop.handle().insert_source(libinput_backend, move |mut event, _, state| {
+        match &mut event {
+            InputEvent::DeviceAdded { device } => {
+                configure_input_device(device, &crate::config::current().touchpad);
+                input_udev.borrow_mut().input_devices.push(device.clone());
+            }
+            InputEvent::DeviceRemoved { device } => input_udev.borrow_mut().input_devices.retain(|d| d != device),
+            _ => {}
         }
         state.process_input_event(event);
     })?;
@@ -208,13 +221,14 @@ pub fn init_udev(
     Ok(())
 }
 
-fn configure_input_device(device: &mut smithay::reexports::input::Device) {
-    if device.config_tap_finger_count() > 0 {
-        let _ = device.config_tap_set_enabled(true);
+fn configure_input_device(device: &mut smithay::reexports::input::Device, touchpad: &crate::config::Touchpad) {
+    let is_touchpad = device.config_tap_finger_count() > 0;
+    if is_touchpad {
+        let _ = device.config_tap_set_enabled(touchpad.tap);
     }
     if device.has_capability(DeviceCapability::Pointer) && device.config_scroll_has_natural_scroll() {
-        // Touchpads scroll "naturally" (content follows fingers), like GNOME's default.
-        let _ = device.config_scroll_set_natural_scroll_enabled(device.config_tap_finger_count() > 0);
+        // Natural scrolling (content follows fingers) is for touchpads; mice keep wheels as-is.
+        let _ = device.config_scroll_set_natural_scroll_enabled(is_touchpad && touchpad.natural_scroll);
     }
 }
 
@@ -341,7 +355,13 @@ fn setup_output(state: &mut XrossState, udev: &SharedUdev, connector: connector:
     );
     let global = output.create_global::<XrossState>(&state.display_handle);
     output.set_preferred(wl_mode);
-    output.change_current_state(Some(wl_mode), None, u.output_scale.map(OutputScale::Fractional), Some((0, 0).into()));
+    // Scale from --scale / the config (see `XrossState::output_scale`).
+    output.change_current_state(
+        Some(wl_mode),
+        None,
+        Some(OutputScale::Fractional(state.output_scale())),
+        Some((0, 0).into()),
+    );
 
     let planes = gpu.manager.device().planes(&crtc).ok();
     let drm_output = match gpu.manager.lock().initialize_output::<_, crate::render::OutputRenderElement>(
@@ -460,7 +480,7 @@ fn render(state: &mut XrossState) {
     let elements = state.output_elements(renderer, &output);
     let result = surface
         .drm_output
-        .render_frame(renderer, &elements, CLEAR_COLOR, FrameFlags::DEFAULT)
+        .render_frame(renderer, &elements, crate::config::current().background(), FrameFlags::DEFAULT)
         .map(|r| !r.is_empty)
         .map_err(|err| match err {
             smithay::backend::drm::compositor::RenderFrameError::PrepareFrame(e) => SwapBuffersError::from(e),

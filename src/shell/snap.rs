@@ -49,8 +49,15 @@ struct GeoAnim {
     anim: Animation,
 }
 
-pub const WINDOW_SPRING: SpringParams = SpringParams::new(1.0, 700.0, 0.001);
-pub const OPEN_SPRING: SpringParams = SpringParams::new(1.0, 900.0, 0.001);
+fn window_spring() -> SpringParams {
+    let a = &crate::config::current().animations;
+    a.params(a.window, 0.001)
+}
+
+fn open_spring() -> SpringParams {
+    let a = &crate::config::current().animations;
+    a.params(a.open, 0.001)
+}
 /// New windows grow from this scale.
 pub const OPEN_SCALE: f64 = 0.92;
 
@@ -60,7 +67,7 @@ pub fn open_progress(window: &Window, now: Duration) -> Option<f64> {
 }
 
 pub fn start_open_animation(window: &Window, now: Duration) {
-    win_state(window).open_anim.set(Some(Animation::new(0.0, 1.0, 0.0, OPEN_SPRING, now)));
+    win_state(window).open_anim.set(Some(Animation::new(0.0, 1.0, 0.0, open_spring(), now)));
 }
 
 /// Forget finished animations; returns whether any are still running.
@@ -133,7 +140,7 @@ impl XrossState {
         if [delta.0, delta.1, delta.2, delta.3].iter().all(|d| d.abs() < 1.0) {
             return;
         }
-        let anim = Animation::new(1.0, 0.0, 0.0, WINDOW_SPRING, now);
+        let anim = Animation::new(1.0, 0.0, 0.0, window_spring(), now);
         win_state(window).geo_anim.set(Some(GeoAnim { delta, to_size: to.size, anim }));
     }
 
@@ -326,7 +333,7 @@ impl XrossState {
     }
 
     fn slot_content_rect(&self, window: &Window, slot: Slot) -> Rectangle<i32, Logical> {
-        let mut rect = slot.rect(self.usable_area());
+        let mut rect = slot.rect_with_gaps(self.usable_area(), crate::config::current().layout.gaps);
         if wants_ssd(window) {
             rect.loc.y += ssd::TITLE_HEIGHT;
             rect.size.h -= ssd::TITLE_HEIGHT;

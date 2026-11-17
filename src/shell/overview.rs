@@ -1,7 +1,7 @@
 //! The overview: the workspace grid zoomed out to 1/4, GNOME style.
 //!
 //! Everything is one transform driven by the overview progress `p` (0 = normal view,
-//! 1 = overview): workspaces scale from 1 to [`OVERVIEW_SCALE`] and the view centre
+//! 1 = overview): workspaces scale from 1 to `overview.scale` (1/4 by default) and the view centre
 //! moves from the workspace camera to the overview's own centre. At `p = 0` this is
 //! exactly the normal sliding view, so opening and closing is a continuous zoom and a
 //! 4-finger swipe can scrub it.
@@ -33,12 +33,17 @@ use crate::{
     state::XrossState,
 };
 
-pub const OVERVIEW_SCALE: f64 = 0.25;
 /// Gap between workspaces in the overview (logical px).
 const OVERVIEW_GAP: f64 = 24.0;
-pub const OVERVIEW_SPRING: SpringParams = SpringParams::new(1.0, 800.0, 0.0005);
+fn overview_spring() -> SpringParams {
+    let a = &crate::config::current().animations;
+    a.params(a.overview, 0.0005)
+}
 /// Spring for the view centre and for workspaces sliding into place after compaction.
-const PAN_SPRING: SpringParams = SpringParams::new(1.0, 600.0, 0.0005);
+fn pan_spring() -> SpringParams {
+    let a = &crate::config::current().animations;
+    a.params(a.pan, 0.0005)
+}
 /// Pointer travel before a press on a window becomes a drag.
 const DRAG_THRESHOLD: f64 = 6.0;
 /// An emulated (scroll-driven) overview swipe ends after this long without events.
@@ -156,8 +161,12 @@ impl XrossState {
         let cur = self.overview_center(now);
         let ov = &mut self.overview;
         ov.center_anim = (
-            Some(ov.center_anim.0.map_or(Animation::new(cur.0, to.0, 0.0, PAN_SPRING, now), |a| a.retarget(to.0, now))),
-            Some(ov.center_anim.1.map_or(Animation::new(cur.1, to.1, 0.0, PAN_SPRING, now), |a| a.retarget(to.1, now))),
+            Some(
+                ov.center_anim.0.map_or(Animation::new(cur.0, to.0, 0.0, pan_spring(), now), |a| a.retarget(to.0, now)),
+            ),
+            Some(
+                ov.center_anim.1.map_or(Animation::new(cur.1, to.1, 0.0, pan_spring(), now), |a| a.retarget(to.1, now)),
+            ),
         );
         ov.center = to;
     }
@@ -166,7 +175,7 @@ impl XrossState {
         let p = self.overview_progress(now);
         let pc = p.clamp(0.0, 1.0);
         let out = self.output_rect().size.to_f64();
-        let scale = 1.0 - (1.0 - OVERVIEW_SCALE) * p;
+        let scale = 1.0 - (1.0 - crate::config::current().overview.scale) * p;
         let gap = WORKSPACE_GAP as f64 * (1.0 - pc) + OVERVIEW_GAP * pc;
         // Where the zoom ends up at p = 0: the camera, except while swiping the open
         // overview closed, which lands on the selected workspace.
@@ -250,7 +259,7 @@ impl XrossState {
         let cur = self.workspaces.current();
         self.overview.selected = cur;
         self.overview.open = true;
-        self.overview.progress = Some(Animation::new(p, 1.0, 0.0, OVERVIEW_SPRING, now));
+        self.overview.progress = Some(Animation::new(p, 1.0, 0.0, overview_spring(), now));
         self.set_center_target((cur.0 as f64, cur.1 as f64));
         self.refresh_pointer_focus();
         tracing::debug!("overview open");
@@ -272,7 +281,7 @@ impl XrossState {
         self.set_center_target((cur.0 as f64, cur.1 as f64));
         self.overview.open = false;
         self.overview.press = None;
-        self.overview.progress = Some(Animation::new(p, 0.0, 0.0, OVERVIEW_SPRING, now));
+        self.overview.progress = Some(Animation::new(p, 0.0, 0.0, overview_spring(), now));
         self.refresh_pointer_focus();
         tracing::debug!(?target, "overview close");
     }
@@ -460,7 +469,7 @@ impl XrossState {
             let (dx, dy) = ((b.0 - c.0) as f64 + sx, (b.1 - c.1) as f64 + sy);
             self.overview.shifts.insert(
                 ws.id,
-                (Animation::new(dx, 0.0, 0.0, PAN_SPRING, now), Animation::new(dy, 0.0, 0.0, PAN_SPRING, now)),
+                (Animation::new(dx, 0.0, 0.0, pan_spring(), now), Animation::new(dy, 0.0, 0.0, pan_spring(), now)),
             );
         }
         // Keep the view still: move the centre with the current workspace.
@@ -470,7 +479,7 @@ impl XrossState {
             let ov = &mut self.overview;
             ov.center = (ov.center.0 + d.0, ov.center.1 + d.1);
             let shift = |a: Option<Animation>, by: f64| {
-                a.map(|a| Animation::new(a.value(now) + by, a.to() + by, a.velocity(now), PAN_SPRING, now))
+                a.map(|a| Animation::new(a.value(now) + by, a.to() + by, a.velocity(now), pan_spring(), now))
             };
             ov.center_anim = (shift(ov.center_anim.0, d.0), shift(ov.center_anim.1, d.1));
             self.shift_camera(d);
@@ -549,8 +558,8 @@ impl XrossState {
         let to = (target.0 as f64, target.1 as f64);
         self.overview.center = to;
         self.overview.center_anim = (
-            Some(Animation::new(cur.0, to.0, velocity.0, PAN_SPRING, now)),
-            Some(Animation::new(cur.1, to.1, velocity.1, PAN_SPRING, now)),
+            Some(Animation::new(cur.0, to.0, velocity.0, pan_spring(), now)),
+            Some(Animation::new(cur.1, to.1, velocity.1, pan_spring(), now)),
         );
     }
 
@@ -629,13 +638,13 @@ impl XrossState {
         tracing::debug!(p, velocity, open, "overview swipe released");
         if open {
             self.overview.open = true;
-            self.overview.progress = Some(Animation::new(p, 1.0, velocity, OVERVIEW_SPRING, now));
+            self.overview.progress = Some(Animation::new(p, 1.0, velocity, overview_spring(), now));
             self.refresh_pointer_focus();
         } else {
             self.overview.open = true; // so close_overview runs its full path
             // Land on the selected workspace (the current one, if it was opening).
             self.close_overview(Some(self.overview.selected));
-            self.overview.progress = Some(Animation::new(p, 0.0, velocity, OVERVIEW_SPRING, now));
+            self.overview.progress = Some(Animation::new(p, 0.0, velocity, overview_spring(), now));
         }
     }
 

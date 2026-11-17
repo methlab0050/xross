@@ -47,8 +47,6 @@ smithay::backend::renderer::element::render_elements! {
     Memory=MemoryRenderBufferRenderElement<GlesRenderer>,
 }
 
-pub const CLEAR_COLOR: [f32; 4] = [0.08, 0.08, 0.10, 1.0];
-
 // Workspace minimap OSD.
 const OSD_CELL: (i32, i32) = (36, 22);
 const OSD_GAP: i32 = 6;

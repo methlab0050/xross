@@ -11,6 +11,8 @@ bitflags = "2"
 xcursor = "0.3"
 png = "0.17"
 ab_glyph = "0.2"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
 
 [dependencies.smithay-drm-extras]
 git = "https://github.com/Smithay/smithay.git"

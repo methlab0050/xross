@@ -105,6 +105,16 @@ pub struct XrossState {
     pub dmabuf_global: Option<smithay::wayland::dmabuf::DmabufGlobal>,
 
     pub bind_profile: Profile,
+    /// The profile when neither `--binds` nor the config chooses one (by backend).
+    pub default_profile: Profile,
+    /// `--binds` on the command line: wins over the config.
+    pub binds_override: Option<Profile>,
+    /// `--scale` on the command line: wins over the config.
+    pub scale_override: Option<f64>,
+    /// Compiled `[binds]` from the config.
+    pub user_binds: Vec<crate::input::user_binds::UserBind>,
+    pub config_path: Option<std::path::PathBuf>,
+    pub config_stamp: Option<(std::time::SystemTime, u64)>,
     /// Keycodes whose press was consumed by a bind; their release is swallowed too.
     pub suppressed_keys: HashSet<Keycode>,
     /// Pointer buttons whose press the compositor consumed (e.g. close button).
@@ -227,6 +237,12 @@ impl XrossState {
             dmabuf_global: None,
 
             bind_profile,
+            default_profile: bind_profile,
+            binds_override: None,
+            scale_override: None,
+            user_binds: Vec::new(),
+            config_path: None,
+            config_stamp: None,
             suppressed_keys: HashSet::new(),
             suppressed_buttons: HashSet::new(),
             active_swipe: None,
@@ -272,9 +288,7 @@ impl XrossState {
 
     pub fn run_pending_startup_commands(&mut self) {
         for cmd in std::mem::take(&mut self.pending_startup_commands) {
-            if let Err(err) = std::process::Command::new("sh").arg("-c").arg(&cmd).spawn() {
-                tracing::warn!(%cmd, %err, "failed to spawn startup command");
-            }
+            self.spawn(&cmd);
         }
     }
 }

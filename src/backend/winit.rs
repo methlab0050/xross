@@ -13,7 +13,7 @@ use smithay::{
     utils::Transform,
 };
 
-use crate::{render::CLEAR_COLOR, state::XrossState};
+use crate::state::XrossState;
 
 pub fn init_winit(
     event_loop: &mut EventLoop<'static, XrossState>,
@@ -34,7 +34,12 @@ pub fn init_winit(
         },
     );
     let _global = output.create_global::<XrossState>(&state.display_handle);
-    output.change_current_state(Some(mode), Some(Transform::Flipped180), None, Some((0, 0).into()));
+    output.change_current_state(
+        Some(mode),
+        Some(Transform::Flipped180),
+        Some(smithay::output::Scale::Fractional(state.output_scale())),
+        Some((0, 0).into()),
+    );
     output.set_preferred(mode);
     state.space.map_output(&output, (0, 0));
 
@@ -60,7 +65,7 @@ pub fn init_winit(
                 };
                 let elements = state.output_elements(renderer, &output);
                 let res = damage_tracker
-                    .render_output(renderer, &mut framebuffer, age, &elements, CLEAR_COLOR)
+                    .render_output(renderer, &mut framebuffer, age, &elements, crate::config::current().background())
                     .map(|r| r.damage.cloned());
                 if let Some(path) = state.screenshot_request.take() {
                     match crate::screenshot::start(renderer, &framebuffer, size) {

@@ -11,8 +11,6 @@ use std::time::Duration;
 use super::binds::Dir;
 use crate::layout::snap::{Col, Row, Slot};
 
-pub const COMBO_TIMEOUT: Duration = Duration::from_millis(500);
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ComboResult {
     /// Where the window should go (`None` = floating).
@@ -32,19 +30,21 @@ struct Pending<K> {
 #[derive(Debug)]
 pub struct SnapCombo<K> {
     pending: Option<Pending<K>>,
-    timeout: Duration,
 }
 
 impl<K> Default for SnapCombo<K> {
     fn default() -> Self {
-        Self { pending: None, timeout: COMBO_TIMEOUT }
+        Self { pending: None }
     }
 }
 
 impl<K: PartialEq> SnapCombo<K> {
     /// A snap press for window `key` at time `now`.
     pub fn press(&mut self, key: K, dir: Dir, now: Duration) -> ComboResult {
-        let pending = self.pending.take().filter(|p| p.key == key && now.saturating_sub(p.at) <= self.timeout);
+        let pending = self
+            .pending
+            .take()
+            .filter(|p| p.key == key && now.saturating_sub(p.at) <= crate::config::current().snap_combo_timeout());
         let rewind = pending.is_some();
         let (mut col, mut row) = pending.map(|p| (p.col, p.row)).unwrap_or_default();
         match dir {
@@ -106,7 +106,7 @@ mod tests {
     fn too_slow_is_two_separate_snaps() {
         let mut c = SnapCombo::default();
         c.press(1, Dir::Right, ms(0));
-        let late = COMBO_TIMEOUT + ms(50);
+        let late = crate::config::current().snap_combo_timeout() + ms(50);
         assert_eq!(c.press(1, Dir::Up, late), ComboResult { target: Some(Maximized), rewind: false });
     }
 

@@ -60,6 +60,29 @@ impl Slot {
         }
     }
 
+    /// Like [`Slot::rect`], with `gap` px around the area and between tiles. Maximized
+    /// windows ignore gaps and fill the area.
+    pub fn rect_with_gaps(self, area: Rectangle<i32, Logical>, gap: i32) -> Rectangle<i32, Logical> {
+        let gap = gap.max(0);
+        if self == Slot::Maximized || gap == 0 {
+            return self.rect(area);
+        }
+        let inner = Rectangle::new(
+            (area.loc.x + gap, area.loc.y + gap).into(),
+            ((area.size.w - 2 * gap).max(1), (area.size.h - 2 * gap).max(1)).into(),
+        );
+        let r = self.rect(inner);
+        // Edges shared with another tile get half the gap each, so tiles end up `gap` apart.
+        let half = gap / 2;
+        let (left, top) = (r.loc.x > inner.loc.x, r.loc.y > inner.loc.y);
+        let right = r.loc.x + r.size.w < inner.loc.x + inner.size.w;
+        let bottom = r.loc.y + r.size.h < inner.loc.y + inner.size.h;
+        let (x0, y0) = (r.loc.x + if left { gap - half } else { 0 }, r.loc.y + if top { gap - half } else { 0 });
+        let x1 = r.loc.x + r.size.w - if right { half } else { 0 };
+        let y1 = r.loc.y + r.size.h - if bottom { half } else { 0 };
+        Rectangle::new((x0, y0).into(), ((x1 - x0).max(1), (y1 - y0).max(1)).into())
+    }
+
     /// The frame rectangle (title bar included) of this slot within `area`.
     pub fn rect(self, area: Rectangle<i32, Logical>) -> Rectangle<i32, Logical> {
         let (x, y, w, h) = (area.loc.x, area.loc.y, area.size.w, area.size.h);
@@ -224,6 +247,23 @@ mod tests {
         let (ur, lr) = (Quarter(Right, Top).rect(a), Quarter(Right, Bottom).rect(a));
         assert_eq!(ur, Rectangle::new((500, 30).into(), (501, 350).into()));
         assert_eq!(lr, Rectangle::new((500, 380).into(), (501, 351).into()));
+    }
+
+    #[test]
+    fn gaps_go_around_and_between_tiles() {
+        let a = Rectangle::new((0, 0).into(), (1000, 600).into());
+        let g = 10;
+        let l = Half(Left).rect_with_gaps(a, g);
+        let r = Half(Right).rect_with_gaps(a, g);
+        assert_eq!(l.loc, (10, 10).into(), "outer gap");
+        assert_eq!(l.size.h, 580);
+        assert_eq!(r.loc.x - (l.loc.x + l.size.w), g, "inner gap between the halves");
+        assert_eq!(r.loc.x + r.size.w, 990, "outer gap on the right");
+        let ur = Quarter(Right, Top).rect_with_gaps(a, g);
+        let lr = Quarter(Right, Bottom).rect_with_gaps(a, g);
+        assert_eq!(lr.loc.y - (ur.loc.y + ur.size.h), g, "inner gap between the quarters");
+        assert_eq!(Maximized.rect_with_gaps(a, g), a, "maximized fills the area");
+        assert_eq!(Half(Left).rect_with_gaps(a, 0), Half(Left).rect(a));
     }
 
     #[test]

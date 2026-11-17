@@ -38,6 +38,10 @@ pub enum Dir {
 pub enum Action {
     SpawnTerminal,
     Quit,
+    /// Ask the focused window to close.
+    Close,
+    /// Toggle fullscreen on the focused window.
+    ToggleFullscreen,
     /// Mod+arrow. Left/Right snap to halves, Up maximizes, Down restores floating;
     /// a quick follow-up turns a half into a quadrant (see `input::combo`).
     Snap(Dir),
@@ -86,6 +90,8 @@ impl std::str::FromStr for Action {
         match words.first().copied() {
             Some("spawn-terminal") => Ok(Action::SpawnTerminal),
             Some("quit") => Ok(Action::Quit),
+            Some("close") => Ok(Action::Close),
+            Some("fullscreen") => Ok(Action::ToggleFullscreen),
             Some("snap") => Ok(Action::Snap(dir(1)?)),
             Some("workspace") => Ok(Action::Workspace(dir(1)?)),
             Some("move-to-workspace") => Ok(Action::MoveToWorkspace(dir(1)?)),
@@ -104,7 +110,7 @@ impl std::str::FromStr for Action {
             }
             Some("overview-pan-end") => Ok(Action::OverviewPanEnd),
             _ => Err(format!(
-                "unknown action '{s}' (expected spawn-terminal, quit, snap DIR, workspace DIR, \
+                "unknown action '{s}' (expected spawn CMD, spawn-terminal, quit, close, fullscreen, snap DIR, workspace DIR, \
                  move-to-workspace DIR, switcher-next, switcher-prev, switcher-commit, switcher-cancel, overview, overview-move DIR, overview-enter, overview-pan DX DY, overview-pan-end, screenshot PATH)"
             )),
         }

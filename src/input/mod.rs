@@ -1,6 +1,7 @@
 pub mod binds;
 pub mod combo;
 pub mod tap;
+pub mod user_binds;
 
 use smithay::{
     backend::input::{
@@ -36,6 +37,8 @@ pub enum SwipeKind {
 enum FilterAction {
     Noop,
     Bind(binds::Action),
+    /// A config bind that runs a command.
+    Spawn(String),
 }
 
 impl XrossState {
@@ -46,8 +49,19 @@ impl XrossState {
         use binds::Action;
         tracing::debug!(?action, "running bind");
         match action {
-            Action::SpawnTerminal => self.spawn("foot"),
+            Action::SpawnTerminal => self.spawn(&crate::config::current().general.terminal),
             Action::Quit => self.loop_signal.stop(),
+            Action::Close => {
+                if let Some(w) = self.focused_window() {
+                    self.close_window(&w);
+                }
+            }
+            Action::ToggleFullscreen => {
+                if let Some(w) = self.focused_window() {
+                    let on = !crate::shell::snap::is_fullscreen(&w);
+                    self.set_fullscreen(&w, on);
+                }
+            }
             Action::Snap(dir) => self.snap_focused(dir),
             Action::Workspace(dir) => self.switch_workspace(dir),
             Action::MoveToWorkspace(dir) => self.move_window_to_workspace(dir),
@@ -80,9 +94,18 @@ impl XrossState {
         self.run_overview_pending();
     }
 
-    pub fn spawn(&self, cmd: &str) {
+    /// Run a command line through `sh -c`, with an activation token so it can bring
+    /// its window forward (e.g. relaunching an already-running single-instance app).
+    pub fn spawn(&mut self, cmd: &str) {
+        let token = self.spawn_token();
         // WAYLAND_DISPLAY (and DISPLAY once Xwayland is up) are set in our own environment.
-        if let Err(err) = std::process::Command::new(cmd).spawn() {
+        let res = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(cmd)
+            .env("XDG_ACTIVATION_TOKEN", &token)
+            .env("DESKTOP_STARTUP_ID", &token)
+            .spawn();
+        if let Err(err) = res {
             tracing::warn!(%cmd, %err, "failed to spawn");
         }
     }
@@ -207,6 +230,14 @@ impl XrossState {
                 }
                 // Match on the unshifted keysym so Shift+Tab is "Tab with Shift held".
                 let sym = handle.raw_latin_sym_or_raw_current_sym().unwrap_or_else(|| handle.modified_sym());
+                if let Some(bound) = user_binds::lookup(&state.user_binds, mods.into(), sym) {
+                    state.suppressed_keys.insert(keycode);
+                    return FilterResult::Intercept(match bound {
+                        user_binds::BoundAction::Builtin(a) => FilterAction::Bind(*a),
+                        user_binds::BoundAction::Spawn(cmd) => FilterAction::Spawn(cmd.clone()),
+                        user_binds::BoundAction::Disabled => FilterAction::Noop,
+                    });
+                }
                 let action = binds::vt_switch(handle.modified_sym())
                     .or_else(|| binds::lookup(state.bind_profile, mods.into(), sym));
                 match action {
@@ -218,8 +249,10 @@ impl XrossState {
                 }
             },
         );
-        if let Some(FilterAction::Bind(a)) = action {
-            self.run_action(a);
+        match action {
+            Some(FilterAction::Bind(a)) => self.run_action(a),
+            Some(FilterAction::Spawn(cmd)) => self.spawn(&cmd),
+            _ => {}
         }
         if std::mem::take(&mut self.switcher_commit_pending) {
             self.switcher_commit();

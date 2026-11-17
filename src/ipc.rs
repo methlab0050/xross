@@ -36,6 +36,11 @@ pub fn init(state: &mut XrossState) -> Option<PathBuf> {
             match socket.recv(&mut buf) {
                 Ok(n) => {
                     let msg = String::from_utf8_lossy(&buf[..n]);
+                    // Not an `Action` (it carries a string): runs like a `spawn` bind.
+                    if let Some(cmd) = msg.trim().strip_prefix("spawn ") {
+                        state.spawn(cmd.trim());
+                        continue;
+                    }
                     if let Some(path) = msg.trim().strip_prefix("screenshot ") {
                         state.screenshot_request = Some(path.trim().into());
                         continue;
@@ -66,7 +71,9 @@ pub fn init(state: &mut XrossState) -> Option<PathBuf> {
 /// Client side of `xross msg`.
 pub fn send(msg: &str) -> Result<(), String> {
     let mut msg = msg.to_string();
-    if let Some(path) = msg.strip_prefix("screenshot ") {
+    if msg.starts_with("spawn ") {
+        // Run by the compositor, with an activation token.
+    } else if let Some(path) = msg.strip_prefix("screenshot ") {
         // The compositor may run elsewhere; give it an absolute path.
         let abs = std::path::absolute(path.trim()).map_err(|e| e.to_string())?;
         msg = format!("screenshot {}", abs.display());

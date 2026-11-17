@@ -18,7 +18,10 @@ use crate::{
     state::XrossState,
 };
 
-pub const SWITCH_SPRING: SpringParams = SpringParams::new(1.0, 900.0, 0.0005);
+pub fn switch_spring() -> SpringParams {
+    let a = &crate::config::current().animations;
+    a.params(a.workspace, 0.0005)
+}
 /// Space between workspaces while they slide past (logical px).
 pub const WORKSPACE_GAP: i32 = 32;
 /// The nudge when a move isn't allowed (workspaces per second).
@@ -110,9 +113,9 @@ impl XrossState {
         let cur = self.workspaces.current();
         let v = |axis| velocity.filter(|(a, _)| *a == axis).map(|(_, v)| v);
         let mk = |prev: Option<Animation>, from: f64, to: f64, vel: Option<f64>| match (prev, vel) {
-            (_, Some(vel)) => Some(Animation::new(from, to, vel, SWITCH_SPRING, now)),
+            (_, Some(vel)) => Some(Animation::new(from, to, vel, switch_spring(), now)),
             (Some(a), None) => Some(a.retarget(to, now)),
-            (None, None) if (from - to).abs() > 1e-6 => Some(Animation::new(from, to, 0.0, SWITCH_SPRING, now)),
+            (None, None) if (from - to).abs() > 1e-6 => Some(Animation::new(from, to, 0.0, switch_spring(), now)),
             (None, None) => None,
         };
         self.camera.x = mk(self.camera.x, px, cur.0 as f64, v(Axis::X));
@@ -124,7 +127,7 @@ impl XrossState {
     pub fn pin_camera(&mut self) {
         let now = self.now();
         let (px, py) = self.camera_pos(now);
-        let pin = |a: Option<Animation>, p: f64| a.or(Some(Animation::new(p, p, 0.0, SWITCH_SPRING, now)));
+        let pin = |a: Option<Animation>, p: f64| a.or(Some(Animation::new(p, p, 0.0, switch_spring(), now)));
         self.camera.x = pin(self.camera.x, px);
         self.camera.y = pin(self.camera.y, py);
     }
@@ -141,7 +144,7 @@ impl XrossState {
         let (px, py) = self.camera_pos(now);
         let cur = self.workspaces.current();
         let (axis, sign) = axis_of(dir);
-        let a = |from: f64, to: i32| Some(Animation::new(from, to as f64, sign * BUMP_VELOCITY, SWITCH_SPRING, now));
+        let a = |from: f64, to: i32| Some(Animation::new(from, to as f64, sign * BUMP_VELOCITY, switch_spring(), now));
         match axis {
             Axis::X => self.camera.x = a(px, cur.0),
             Axis::Y => self.camera.y = a(py, cur.1),
@@ -213,8 +216,8 @@ impl XrossState {
 
         // The camera continues from the displayed position (which may be rubber-banded).
         match axis {
-            Axis::X => self.camera.x = Some(Animation::new(pos.0, pos.0, 0.0, SWITCH_SPRING, now)),
-            Axis::Y => self.camera.y = Some(Animation::new(pos.1, pos.1, 0.0, SWITCH_SPRING, now)),
+            Axis::X => self.camera.x = Some(Animation::new(pos.0, pos.0, 0.0, switch_spring(), now)),
+            Axis::Y => self.camera.y = Some(Animation::new(pos.1, pos.1, 0.0, switch_spring(), now)),
         }
         if (offset > 0.0 && !pos_ok) || (offset < 0.0 && !neg_ok) {
             // Released while rubber-banding: don't fling.
@@ -244,7 +247,7 @@ impl XrossState {
     pub fn shift_camera(&mut self, d: (f64, f64)) {
         let now = self.now();
         let shift = |a: Option<Animation>, by: f64| {
-            a.map(|a| Animation::new(a.value(now) + by, a.to() + by, a.velocity(now), SWITCH_SPRING, now))
+            a.map(|a| Animation::new(a.value(now) + by, a.to() + by, a.velocity(now), switch_spring(), now))
         };
         self.camera.x = shift(self.camera.x, d.0);
         self.camera.y = shift(self.camera.y, d.1);

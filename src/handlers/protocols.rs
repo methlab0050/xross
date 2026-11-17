@@ -36,24 +36,53 @@ impl XdgActivationHandler for XrossState {
         &mut self.xdg_activation_state
     }
 
-    /// Only tokens tied to a recent input event on our seat are valid (no focus stealing).
+    /// Only tokens tied to a recent input event on our seat are valid (no focus
+    /// stealing). Tokens xross hands to processes it spawns skip this check.
     fn token_created(&mut self, _token: XdgActivationToken, data: XdgActivationTokenData) -> bool {
-        let Some((serial, seat)) = data.serial else { return false };
+        // Forget stale tokens so the table doesn't grow forever.
+        self.xdg_activation_state.retain_tokens(|_, d| d.timestamp.elapsed() < TOKEN_LIFETIME);
+        let Some((serial, seat)) = data.serial else {
+            tracing::debug!(app_id = ?data.app_id, "activation token refused: no input serial");
+            return false;
+        };
         let keyboard = self.seat.get_keyboard().unwrap();
-        Seat::from_resource(&seat) == Some(self.seat.clone())
-            && keyboard.last_enter().is_some_and(|last| serial.is_no_older_than(&last))
+        let valid = Seat::from_resource(&seat) == Some(self.seat.clone())
+            && keyboard.last_enter().is_some_and(|last| serial.is_no_older_than(&last));
+        tracing::debug!(app_id = ?data.app_id, valid, "activation token created");
+        valid
     }
 
+    /// Tokens stay valid for their lifetime rather than being single-use: GTK reuses its
+    /// startup token when presenting an existing window again.
     fn request_activation(&mut self, _token: XdgActivationToken, data: XdgActivationTokenData, surface: WlSurface) {
-        if data.timestamp.elapsed().as_secs() >= 10 || self.is_locked() {
+        if data.timestamp.elapsed() >= TOKEN_LIFETIME {
+            tracing::debug!("activation refused: token expired");
             return;
         }
-        let Some(window) = self.window_for_surface(&surface) else { return };
-        tracing::debug!("xdg-activation request granted");
-        // A window on another workspace brings us there.
-        let elsewhere = workspace_of(&window)
+        let Some(window) = self.window_for_surface(&surface) else {
+            // Usually a new window activating before its first frame; it gets focus
+            // when it maps anyway.
+            tracing::debug!("activation for a window that isn't mapped yet");
+            return;
+        };
+        self.activate_window(&window, "xdg-activation");
+    }
+}
+
+/// How long an activation token stays usable.
+const TOKEN_LIFETIME: std::time::Duration = std::time::Duration::from_secs(10);
+
+impl XrossState {
+    /// Bring a window forward on request (xdg-activation, or `_NET_ACTIVE_WINDOW` from
+    /// X11): switch to its workspace if needed, then raise and focus it.
+    pub fn activate_window(&mut self, window: &smithay::desktop::Window, via: &str) {
+        if self.is_locked() {
+            return;
+        }
+        let elsewhere = workspace_of(window)
             .filter(|ws| *ws != self.current_ws())
             .and_then(|ws| self.workspaces.iter().find(|(_, w)| w.id == ws).map(|(c, _)| c));
+        tracing::info!(via, workspace = ?elsewhere, "activating window");
         if let Some(coord) = elsewhere {
             if self.overview_open() {
                 self.close_overview(Some(coord));
@@ -62,7 +91,14 @@ impl XdgActivationHandler for XrossState {
                 self.animate_switch();
             }
         }
-        self.focus_window(Some(&window), SERIAL_COUNTER.next_serial());
+        self.focus_window(Some(window), SERIAL_COUNTER.next_serial());
+    }
+
+    /// A token for a process xross starts, so it may activate its window (or an
+    /// already-running instance's) when it appears.
+    pub fn spawn_token(&mut self) -> String {
+        let (token, _) = self.xdg_activation_state.create_external_token(None);
+        token.to_string()
     }
 }
 

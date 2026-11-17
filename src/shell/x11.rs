@@ -211,6 +211,20 @@ impl XwmHandler for XrossState {
         self.start_resize(window, start_data, edges.into(), SERIAL_COUNTER.next_serial());
     }
 
+    /// `_NET_ACTIVE_WINDOW`: X11's way of asking to be brought forward (X11 apps don't
+    /// use xdg-activation). X11 has no reliable focus-stealing protection, so it's granted.
+    fn active_window_request(
+        &mut self,
+        _xwm: XwmId,
+        surface: X11Surface,
+        _timestamp: u32,
+        _currently_active: Option<X11Surface>,
+    ) {
+        if let Some(window) = self.window_for_x11(&surface) {
+            self.activate_window(&window, "_NET_ACTIVE_WINDOW");
+        }
+    }
+
     fn move_request(&mut self, _xwm: XwmId, surface: X11Surface, _button: u32) {
         let pointer = self.seat.get_pointer().unwrap();
         let (Some(start_data), Some(window)) = (pointer.grab_start_data(), self.window_for_x11(&surface)) else {

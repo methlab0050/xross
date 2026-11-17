@@ -1,0 +1,69 @@
+# xross config: copy to ~/.config/xross/config.toml (or pass --config PATH).
+#
+# Every setting is optional and shown here with its default. The file is re-read
+# whenever it changes; mistakes are logged (to ~/.local/state/xross/xross.log and
+# stdout) and the previous config stays in effect.
+
+[general]
+# What Ctrl+` runs (through `sh -c`).
+terminal = "foot"
+# "dev" (Alt / Shift+Alt) or "prod" (Super / Ctrl+Super). Leave unset for dev when
+# nested and prod on a TTY. `--binds` on the command line wins.
+# binds = "prod"
+
+[startup]
+# Run once after Xwayland is up, through `sh -c`.
+commands = []
+# commands = ["swaybg -i ~/Pictures/wall.png -m fill", "waybar"]
+
+[output]
+# Scale factor; fractional is fine (1.25, 1.5, 2). Unset: 1. `--scale` wins.
+# scale = 1.5
+
+[layout]
+# Gap around and between snapped windows (logical px).
+gaps = 0
+# How quickly the second Mod+arrow must follow the first for a quadrant (ms).
+snap_combo_ms = 500
+
+[gestures]
+# Finger travel (touchpad units) for one whole workspace; bigger is slower.
+swipe_px_per_workspace = 500.0
+
+[animations]
+# false: everything snaps into place instantly.
+enabled = true
+# Springs: higher stiffness is faster; damping 1.0 never overshoots, below 1.0 bounces.
+workspace = { stiffness = 900.0, damping = 1.0 }  # sliding between workspaces
+window = { stiffness = 700.0, damping = 1.0 }     # snap, maximize, restore
+open = { stiffness = 900.0, damping = 1.0 }       # new windows appearing
+overview = { stiffness = 800.0, damping = 1.0 }   # opening/closing the overview
+pan = { stiffness = 600.0, damping = 1.0 }        # panning inside the overview
+
+[overview]
+# Workspace size in the overview, relative to the screen.
+scale = 0.25
+
+[touchpad]
+tap = true
+natural_scroll = true
+
+[appearance]
+# Behind everything, and between workspaces while they slide.
+background = "#141419"
+
+[binds]
+# Extra keybinds: "Modifiers+Key" = "action". They override the built-in binds with
+# the same keys; "none" disables a built-in bind.
+#
+# Modifiers: Super, Ctrl, Alt, Shift, and Mod (Alt in the dev profile, Super in prod).
+# Keys are xkb keysym names (Return, space, a, F1, XF86AudioRaiseVolume, ...).
+#
+# Actions: spawn CMD, close, fullscreen, quit, spawn-terminal, overview,
+#   snap left|right|up|down, workspace DIR, move-to-workspace DIR,
+#   switcher-next, switcher-prev.
+"Mod+Return" = "spawn foot"
+"Mod+q" = "close"
+"Mod+f" = "fullscreen"
+"Mod+d" = "spawn fuzzel"
+# "Ctrl+grave" = "none"

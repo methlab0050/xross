@@ -3,6 +3,7 @@
 mod anim;
 mod backend;
 mod capture;
+mod config;
 mod cursor;
 mod focus;
 mod grabs;
@@ -31,12 +32,14 @@ struct Args {
     binds: Option<Profile>,
     command: Option<String>,
     scale: Option<f64>,
+    config: Option<std::path::PathBuf>,
+    log: Option<std::path::PathBuf>,
 }
 
-const USAGE: &str = "usage: xross [--backend winit|udev] [--binds dev|prod] [--scale FACTOR] [-c|--command CMD]\n       xross msg ACTION...   (run an action in the running xross, e.g. `xross msg workspace right`)";
+const USAGE: &str = "usage: xross [--backend winit|udev] [--binds dev|prod] [--scale FACTOR] [--config PATH] [--log PATH] [-c|--command CMD]\n       xross msg ACTION...   (run an action in the running xross, e.g. `xross msg workspace right`)";
 
 fn parse_args() -> Result<Args, String> {
-    let mut args = Args { backend: Backend::Winit, binds: None, command: None, scale: None };
+    let mut args = Args { backend: Backend::Winit, binds: None, command: None, scale: None, config: None, log: None };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
         let mut value = || it.next().ok_or_else(|| format!("{flag} needs a value\n{USAGE}"));
@@ -50,6 +53,8 @@ fn parse_args() -> Result<Args, String> {
             }
             "--binds" => args.binds = Some(value()?.parse()?),
             "-c" | "--command" => args.command = Some(value()?),
+            "--config" => args.config = Some(value()?.into()),
+            "--log" => args.log = Some(value()?.into()),
             "--scale" => {
                 let v = value()?;
                 args.scale = Some(v.parse().map_err(|_| format!("invalid scale '{v}'"))?);
@@ -75,10 +80,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    init_logging();
     let args = parse_args()?;
+    let log_path = init_logging(args.log.clone());
 
-    // Nested runs inside GNOME, which grabs Super, so it defaults to the Alt-based dev binds.
+    // Nested runs inside GNOME, which grabs Super, so it defaults to the Alt-based dev
+    // binds. The config can choose, and --binds overrides both.
     let profile = args.binds.unwrap_or(match args.backend {
         Backend::Winit => Profile::Dev,
         Backend::Udev => Profile::Prod,
@@ -87,13 +93,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut event_loop: EventLoop<XrossState> = EventLoop::try_new()?;
     let display: Display<XrossState> = Display::new()?;
     let mut state = XrossState::new(&mut event_loop, display, profile);
+    // Before the backend, so outputs come up with the configured scale.
+    state.binds_override = args.binds;
+    state.scale_override = args.scale;
+    state.init_config(args.config.or_else(config::default_path));
 
     match args.backend {
         Backend::Winit => backend::winit::init_winit(&mut event_loop, &mut state)?,
-        Backend::Udev => backend::udev::init_udev(&mut event_loop, &mut state, args.scale)?,
+        Backend::Udev => backend::udev::init_udev(&mut event_loop, &mut state)?,
     }
 
-    tracing::info!(socket = ?state.socket_name, ?profile, "xross started");
+    tracing::info!(socket = ?state.socket_name, profile = ?state.bind_profile, log = ?log_path, "xross started");
     // Children (and anything spawned by binds) connect to us, not the host compositor.
     unsafe { std::env::set_var("WAYLAND_DISPLAY", &state.socket_name) };
 
@@ -110,8 +120,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn init_logging() {
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("xross=info,smithay=warn"));
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+/// Log to stdout and to a file (`--log PATH`, else `/xross/xross.log`).
+/// The previous run's log is kept as `xross.log.old`. Returns the file's path.
+fn init_logging(path: Option<std::path::PathBuf>) -> Option<std::path::PathBuf> {
+    use tracing_subscriber::{EnvFilter, fmt, prelude::*};
+
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("xross=info,smithay=warn"));
+    let file = path.or_else(default_log_path).and_then(|p| match open_log(&p) {
+        Ok(f) => Some((p, f)),
+        Err(err) => {
+            eprintln!("xross: can't open log file {}: {err}", p.display());
+            None
+        }
+    });
+    let (log_path, file_layer) = match file {
+        Some((p, f)) => (Some(p), Some(fmt::layer().with_ansi(false).with_writer(std::sync::Mutex::new(f)))),
+        None => (None, None),
+    };
+    tracing_subscriber::registry().with(filter).with(fmt::layer()).with(file_layer).init();
+
+    // A crash on the TTY would otherwise leave no trace once the screen is gone.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        tracing::error!("panic: {info}\n{}", std::backtrace::Backtrace::force_capture());
+        default_hook(info);
+    }));
+    log_path
+}
+
+fn default_log_path() -> Option<std::path::PathBuf> {
+    let state = std::env::var_os("XDG_STATE_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".local/state")))?;
+    Some(state.join("xross").join("xross.log"))
+}
+
+/// Create the log file, keeping the previous one as `<name>.old`.
+fn open_log(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    if path.exists() {
+        let _ = std::fs::rename(path, path.with_extension("log.old"));
+    }
+    std::fs::File::create(path)
 }

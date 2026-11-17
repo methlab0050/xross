@@ -19,7 +19,7 @@ use smithay::{
     wayland::{image_copy_capture::CaptureFailureReason, shm::with_buffer_contents_mut},
 };
 
-use crate::{handlers::CaptureTarget, render::CLEAR_COLOR, state::XrossState};
+use crate::{handlers::CaptureTarget, state::XrossState};
 
 /// Fill every capture waiting on `output`.
 pub fn process(state: &mut XrossState, renderer: &mut GlesRenderer, output: &Output) {
@@ -77,7 +77,7 @@ fn render(
     let mapping = {
         let mut target = renderer.bind(&mut texture)?;
         let mut tracker = OutputDamageTracker::new(size, scale, Transform::Normal);
-        tracker.render_output(renderer, &mut target, 0, &elements, CLEAR_COLOR)?;
+        tracker.render_output(renderer, &mut target, 0, &elements, crate::config::current().background())?;
         renderer.copy_framebuffer(&target, Rectangle::from_size(buffer_size), Fourcc::Abgr8888)?
     };
     let data = renderer.map_texture(&mapping)?;

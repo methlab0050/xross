@@ -47,6 +47,7 @@ in
     # runtime / test clients
     xwayland
     foot
+    alacritty
     xterm
     xeyes
     mesa-demos
@@ -55,6 +56,7 @@ in
     wev
     wl-clipboard
     xclip
+    xdotool
     grim
     swaylock
     swayidle

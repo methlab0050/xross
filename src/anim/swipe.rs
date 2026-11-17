@@ -8,8 +8,10 @@
 
 use std::time::Duration;
 
-/// Finger travel (in touchpad "pixels") for one full workspace.
-pub const PX_PER_WORKSPACE: f64 = 500.0;
+/// Finger travel (in touchpad "pixels") for one full workspace (`gestures.swipe_px_per_workspace`).
+pub fn px_per_workspace() -> f64 {
+    crate::config::current().gestures.swipe_px_per_workspace.max(1.0)
+}
 /// Travel before the swipe commits to an axis.
 const LOCK_THRESHOLD_PX: f64 = 12.0;
 /// Velocity is measured over this much recent history.
@@ -59,8 +61,8 @@ impl SwipeTracker {
     /// Current raw offset along the locked axis (0 before locking).
     pub fn offset(&self) -> f64 {
         match self.axis {
-            Some(Axis::X) => -self.accum.0 / PX_PER_WORKSPACE,
-            Some(Axis::Y) => -self.accum.1 / PX_PER_WORKSPACE,
+            Some(Axis::X) => -self.accum.0 / px_per_workspace(),
+            Some(Axis::Y) => -self.accum.1 / px_per_workspace(),
             None => 0.0,
         }
     }
@@ -116,7 +118,7 @@ mod tests {
         assert_eq!(s.update(-5.0, 1.0, ms(0)), None);
         let (axis, off) = s.update(-10.0, 2.0, ms(10)).unwrap();
         assert_eq!(axis, Axis::X);
-        assert!((off - 15.0 / PX_PER_WORKSPACE).abs() < 1e-9, "fingers left -> view moves right");
+        assert!((off - 15.0 / px_per_workspace()).abs() < 1e-9, "fingers left -> view moves right");
         // Later vertical movement doesn't change the axis.
         s.update(0.0, -200.0, ms(20));
         assert_eq!(s.axis(), Some(Axis::X));
@@ -125,7 +127,7 @@ mod tests {
     #[test]
     fn follows_one_to_one() {
         let mut s = SwipeTracker::default();
-        s.update(0.0, -PX_PER_WORKSPACE / 2.0, ms(0));
+        s.update(0.0, -px_per_workspace() / 2.0, ms(0));
         assert!((s.offset() - 0.5).abs() < 1e-9);
     }
 
@@ -135,7 +137,7 @@ mod tests {
         s.update(-30.0, 0.0, ms(0));
         s.update(-30.0, 0.0, ms(50));
         // 30px in 50ms, whatever the sensitivity is tuned to.
-        let expected = 30.0 / PX_PER_WORKSPACE / 0.05;
+        let expected = 30.0 / px_per_workspace() / 0.05;
         assert!((s.velocity() - expected).abs() < 1e-6);
     }
 
