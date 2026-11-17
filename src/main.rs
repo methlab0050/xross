@@ -6,6 +6,7 @@ mod focus;
 mod grabs;
 mod handlers;
 mod input;
+mod ipc;
 mod layout;
 mod render;
 mod shell;
@@ -28,7 +29,7 @@ struct Args {
     scale: Option<f64>,
 }
 
-const USAGE: &str = "usage: xross [--backend winit|udev] [--binds dev|prod] [--scale FACTOR] [-c|--command CMD]";
+const USAGE: &str = "usage: xross [--backend winit|udev] [--binds dev|prod] [--scale FACTOR] [-c|--command CMD]\n       xross msg ACTION...   (run an action in the running xross, e.g. `xross msg workspace right`)";
 
 fn parse_args() -> Result<Args, String> {
     let mut args = Args { backend: Backend::Winit, binds: None, command: None, scale: None };
@@ -60,6 +61,16 @@ fn parse_args() -> Result<Args, String> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Client mode: `xross msg snap left`.
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    if argv.first().map(String::as_str) == Some("msg") {
+        if let Err(err) = ipc::send(&argv[1..].join(" ")) {
+            eprintln!("xross msg: {err}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+
     init_logging();
     let args = parse_args()?;
 
@@ -84,9 +95,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // The startup command runs once Xwayland is ready (or failed), so it inherits DISPLAY.
     state.pending_startup_commands.extend(args.command);
+    let ipc_path = ipc::init(&mut state);
     state.start_xwayland();
 
-    event_loop.run(None, &mut state, |_| {})?;
+    let res = event_loop.run(None, &mut state, |_| {});
+    if let Some(path) = ipc_path {
+        let _ = std::fs::remove_file(path);
+    }
+    res?;
     Ok(())
 }
 

@@ -12,7 +12,10 @@ use smithay::{
     utils::{IsAlive, Logical, Point, Rectangle, Size},
 };
 
-use super::{ssd, wants_ssd};
+use super::{
+    ssd, wants_ssd,
+    workspace::{WsId, workspace_of},
+};
 use crate::{
     input::binds::Dir,
     layout::snap::{Slot, Tiling},
@@ -64,7 +67,7 @@ impl XrossState {
     }
 
     pub fn is_snapped(&self, window: &Window) -> bool {
-        self.tiling.slot_of(window).is_some() || is_fullscreen(window)
+        self.slot_of(window).is_some() || is_fullscreen(window)
     }
 
     /// Mod+arrow on the focused window, including the quick-succession quadrant combo.
@@ -72,21 +75,27 @@ impl XrossState {
         let Some(window) = self.focused_window() else {
             return;
         };
-        if window.x11_surface().is_some_and(|x| x.is_override_redirect()) {
+        // Override-redirect windows have no workspace and never snap.
+        let Some(ws) = workspace_of(&window) else {
             return;
-        }
+        };
         let was_fullscreen = win_state(&window).fullscreen.replace(false);
 
         let res = self.snap_combo.press(window.clone(), dir, self.start_time.elapsed());
-        let before = self.tiling.clone();
-        match (&self.snap_snapshot, res.rewind) {
-            (Some(snapshot), true) => self.tiling = snapshot.clone(),
-            _ => self.snap_snapshot = Some(before.clone()),
+        let snapshot = self.snap_snapshot.clone().filter(|_| res.rewind);
+        let starts_combo = snapshot.is_none();
+        let Some(tiling) = self.tiling_mut(ws) else { return };
+        let before = tiling.clone();
+        if let Some(snapshot) = snapshot {
+            *tiling = snapshot;
         }
-        self.tiling.assign(&window, res.target);
+        tiling.assign(&window, res.target);
+        if starts_combo {
+            self.snap_snapshot = Some(before.clone());
+        }
         tracing::debug!(target = ?res.target, rewind = res.rewind, "snap");
         // Coming out of fullscreen, the restore rect is already right; don't overwrite it.
-        self.apply_tiling_change(&before, Some(&window), was_fullscreen);
+        self.apply_tiling_change(ws, &before, Some(&window), was_fullscreen);
         if was_fullscreen {
             self.apply_geometry(&window);
         }
@@ -96,22 +105,24 @@ impl XrossState {
     pub fn set_window_slot(&mut self, window: &Window, target: Option<Slot>) {
         self.snap_combo.cancel();
         self.snap_snapshot = None;
-        let before = self.tiling.clone();
-        self.tiling.assign(window, target);
-        self.apply_tiling_change(&before, Some(window), false);
+        let Some(ws) = workspace_of(window) else { return };
+        let Some(tiling) = self.tiling_mut(ws) else { return };
+        let before = tiling.clone();
+        tiling.assign(window, target);
+        self.apply_tiling_change(ws, &before, Some(window), false);
     }
 
     pub fn set_fullscreen(&mut self, window: &Window, on: bool) {
         let state = win_state(window);
         if state.fullscreen.get() != on {
-            if on && self.tiling.slot_of(window).is_none() {
+            if on && self.slot_of(window).is_none() {
                 state.restore.set(self.window_rect(window));
             }
             state.fullscreen.set(on);
         }
         // Always answer, even when nothing changed: clients wait for a configure.
         self.apply_geometry(window);
-        if on {
+        if on && self.is_visible(window) {
             self.focus_window(Some(window), smithay::utils::SERIAL_COUNTER.next_serial());
         }
     }
@@ -120,9 +131,11 @@ impl XrossState {
     pub fn forget_window(&mut self, window: &Window) {
         self.snap_combo.cancel();
         self.snap_snapshot = None;
-        let before = self.tiling.clone();
-        self.tiling.remove(window);
-        self.apply_tiling_change(&before, None, false);
+        let Some(ws) = workspace_of(window) else { return };
+        let Some(tiling) = self.tiling_mut(ws) else { return };
+        let before = tiling.clone();
+        tiling.remove(window);
+        self.apply_tiling_change(ws, &before, None, false);
     }
 
     /// Called right after a new window is mapped as floating.
@@ -157,7 +170,7 @@ impl XrossState {
         configure_before_map(window, XdgState::Maximized, true, Some(size));
     }
 
-    /// Re-apply geometry to everything snapped (the usable area changed).
+    /// Re-apply geometry to everything snapped, on every workspace (the usable area changed).
     pub fn relayout(&mut self) {
         let snapped: Vec<Window> = self.space.elements().filter(|w| self.is_snapped(w)).cloned().collect();
         for w in snapped {
@@ -202,10 +215,17 @@ impl XrossState {
     /// Configure every window whose slot changed since `before`. `focus` is the window
     /// the user acted on; it is raised above the windows it displaced. `keep_restore`
     /// means its restore rect is already saved.
-    fn apply_tiling_change(&mut self, before: &Tiling<Window>, focus: Option<&Window>, keep_restore: bool) {
+    pub fn apply_tiling_change(
+        &mut self,
+        ws: WsId,
+        before: &Tiling<Window>,
+        focus: Option<&Window>,
+        keep_restore: bool,
+    ) {
+        let after = self.tiling(ws).cloned().unwrap_or_default();
         let mut changed: Vec<Window> = Vec::new();
-        for (w, _) in before.iter().chain(self.tiling.iter()) {
-            let moved = before.slot_of(w) != self.tiling.slot_of(w);
+        for (w, _) in before.iter().chain(after.iter()) {
+            let moved = before.slot_of(w) != after.slot_of(w);
             if moved && !changed.contains(w) && w.alive() && self.space.element_location(w).is_some() {
                 changed.push(w.clone());
             }
@@ -240,7 +260,7 @@ impl XrossState {
         let (rect, size, mode) = if state.fullscreen.get() {
             let r = self.output_rect();
             (Some(r), Some(r.size), Mode::Fullscreen)
-        } else if let Some(slot) = self.tiling.slot_of(window) {
+        } else if let Some(slot) = self.slot_of(window) {
             let r = self.slot_content_rect(window, slot);
             let mode = if slot == Slot::Maximized { Mode::Maximized } else { Mode::Tiled };
             (Some(r), Some(r.size), mode)

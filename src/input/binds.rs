@@ -38,13 +38,51 @@ pub enum Action {
     /// Mod+arrow. Left/Right snap to halves, Up maximizes, Down restores floating;
     /// a quick follow-up turns a half into a quadrant (see `input::combo`).
     Snap(Dir),
-    /// Workspace-mod+arrow: move to the adjacent workspace (stage 4).
+    /// Workspace-mod+arrow: move to the adjacent workspace, if the grid rules allow it.
     Workspace(Dir),
+    /// Workspace-mod+Ctrl/Shift+arrow: take the focused window to the adjacent workspace.
+    MoveToWorkspace(Dir),
     /// Mod+Tab / Mod+Shift+Tab: MRU switcher (stage 6).
     SwitcherNext,
     SwitcherPrev,
     /// Ctrl+Alt+F1..F12 on the udev backend.
     SwitchVt(i32),
+}
+
+impl std::str::FromStr for Dir {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "left" => Ok(Dir::Left),
+            "right" => Ok(Dir::Right),
+            "up" => Ok(Dir::Up),
+            "down" => Ok(Dir::Down),
+            other => Err(format!("unknown direction '{other}' (expected left|right|up|down)")),
+        }
+    }
+}
+
+/// Text form of actions, for `xross msg` (see [`crate::ipc`]): e.g. `snap left`,
+/// `workspace down`, `move-to-workspace right`, `spawn-terminal`.
+impl std::str::FromStr for Action {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let words: Vec<&str> = s.split_whitespace().collect();
+        let dir = |i: usize| words.get(i).ok_or_else(|| format!("'{s}' needs a direction"))?.parse::<Dir>();
+        match words.first().copied() {
+            Some("spawn-terminal") => Ok(Action::SpawnTerminal),
+            Some("quit") => Ok(Action::Quit),
+            Some("snap") => Ok(Action::Snap(dir(1)?)),
+            Some("workspace") => Ok(Action::Workspace(dir(1)?)),
+            Some("move-to-workspace") => Ok(Action::MoveToWorkspace(dir(1)?)),
+            Some("switcher-next") => Ok(Action::SwitcherNext),
+            Some("switcher-prev") => Ok(Action::SwitcherPrev),
+            _ => Err(format!(
+                "unknown action '{s}' (expected spawn-terminal, quit, snap DIR, workspace DIR, \
+                 move-to-workspace DIR, switcher-next, switcher-prev)"
+            )),
+        }
+    }
 }
 
 /// Modifier set, compared exactly (caps/num lock ignored).
@@ -70,6 +108,8 @@ impl Mods {
     const CTRL_ALT: Mods = Mods { ctrl: true, alt: true, ..Self::NONE };
     const SHIFT_ALT: Mods = Mods { shift: true, alt: true, ..Self::NONE };
     const CTRL_LOGO: Mods = Mods { ctrl: true, logo: true, ..Self::NONE };
+    const CTRL_SHIFT_ALT: Mods = Mods { ctrl: true, shift: true, alt: true, ..Self::NONE };
+    const CTRL_SHIFT_LOGO: Mods = Mods { ctrl: true, shift: true, logo: true, ..Self::NONE };
 
     fn with_shift(self) -> Mods {
         Mods { shift: true, ..self }
@@ -90,6 +130,15 @@ impl Profile {
         match self {
             Profile::Dev => Mods::SHIFT_ALT,
             Profile::Prod => Mods::CTRL_LOGO,
+        }
+    }
+
+    /// Modifier for taking the focused window along to another workspace: the
+    /// workspace modifier plus the one modifier it lacks (Ctrl in dev, Shift in prod).
+    pub fn move_mod(self) -> Mods {
+        match self {
+            Profile::Dev => Mods::CTRL_SHIFT_ALT,
+            Profile::Prod => Mods::CTRL_SHIFT_LOGO,
         }
     }
 
@@ -145,6 +194,11 @@ pub fn lookup(profile: Profile, mods: Mods, sym: Keysym) -> Option<Action> {
     {
         return Some(Action::Workspace(dir));
     }
+    if mods == profile.move_mod()
+        && let Some(dir) = arrow(sym)
+    {
+        return Some(Action::MoveToWorkspace(dir));
+    }
     None
 }
 
@@ -170,6 +224,7 @@ mod tests {
         assert_eq!(lookup(p, Mods::ALT, Keysym::Right), Some(Action::Snap(Dir::Right)));
         assert_eq!(lookup(p, Mods::ALT, Keysym::Up), Some(Action::Snap(Dir::Up)));
         assert_eq!(lookup(p, Mods::SHIFT_ALT, Keysym::Left), Some(Action::Workspace(Dir::Left)));
+        assert_eq!(lookup(p, Mods::CTRL_SHIFT_ALT, Keysym::Right), Some(Action::MoveToWorkspace(Dir::Right)));
         assert_eq!(lookup(p, Mods::ALT, Keysym::Tab), Some(Action::SwitcherNext));
         assert_eq!(lookup(p, Mods::SHIFT_ALT, Keysym::Tab), Some(Action::SwitcherPrev));
         assert_eq!(lookup(p, Mods::LOGO, Keysym::Right), None);
@@ -187,6 +242,7 @@ mod tests {
         let p = Profile::Prod;
         assert_eq!(lookup(p, Mods::LOGO, Keysym::Left), Some(Action::Snap(Dir::Left)));
         assert_eq!(lookup(p, Mods::CTRL_LOGO, Keysym::Down), Some(Action::Workspace(Dir::Down)));
+        assert_eq!(lookup(p, Mods::CTRL_SHIFT_LOGO, Keysym::Up), Some(Action::MoveToWorkspace(Dir::Up)));
         assert_eq!(lookup(p, Mods::LOGO, Keysym::Tab), Some(Action::SwitcherNext));
         assert_eq!(lookup(p, Mods::LOGO.with_shift(), Keysym::Tab), Some(Action::SwitcherPrev));
         assert_eq!(lookup(p, Mods::ALT, Keysym::Right), None, "Alt is left to apps in prod");

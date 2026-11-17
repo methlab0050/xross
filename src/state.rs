@@ -41,8 +41,12 @@ pub struct XrossState {
     /// Toplevels that exist but haven't committed a buffer yet.
     pub unmapped_windows: Vec<Window>,
     pub popups: PopupManager,
-    /// Snap layout of the (single, for now) workspace.
-    pub tiling: crate::layout::snap::Tiling<Window>,
+    /// The 2D workspace grid; each workspace owns its snap layout.
+    pub workspaces: crate::layout::grid::Grid<crate::shell::workspace::Workspace>,
+    pub next_ws_id: crate::shell::workspace::WsId,
+    /// When the workspace minimap OSD hides (time since start).
+    pub ws_osd_until: Option<std::time::Duration>,
+    pub ws_osd: std::cell::RefCell<crate::render::OsdBuffers>,
     pub snap_combo: crate::input::combo::SnapCombo<Window>,
     /// Layout from before the current snap combo started (see [`crate::input::combo`]).
     pub snap_snapshot: Option<crate::layout::snap::Tiling<Window>>,
@@ -120,7 +124,10 @@ impl XrossState {
             space: Space::default(),
             unmapped_windows: Vec::new(),
             popups: PopupManager::default(),
-            tiling: Default::default(),
+            workspaces: crate::layout::grid::Grid::new(crate::shell::workspace::Workspace::new(0)),
+            next_ws_id: 0,
+            ws_osd_until: None,
+            ws_osd: Default::default(),
             snap_combo: Default::default(),
             snap_snapshot: None,
             last_usable_area: Default::default(),

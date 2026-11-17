@@ -33,7 +33,8 @@ impl XrossState {
             Action::SpawnTerminal => self.spawn("foot"),
             Action::Quit => self.loop_signal.stop(),
             Action::Snap(dir) => self.snap_focused(dir),
-            Action::Workspace(_) => tracing::info!(?action, "workspaces arrive in stage 4"),
+            Action::Workspace(dir) => self.switch_workspace(dir),
+            Action::MoveToWorkspace(dir) => self.move_window_to_workspace(dir),
             Action::SwitcherNext | Action::SwitcherPrev => {
                 tracing::info!(?action, "the window switcher arrives in stage 6")
             }
@@ -113,7 +114,7 @@ impl XrossState {
         }
     }
 
-    fn on_pointer_motion(&mut self, pos: Point<f64, Logical>, time: InputTime) {
+    pub fn on_pointer_motion(&mut self, pos: Point<f64, Logical>, time: InputTime) {
         let serial = SERIAL_COUNTER.next_serial();
         let pointer = self.seat.get_pointer().unwrap();
         let under = self.pointer_hit(pos).and_then(|h| h.surface());

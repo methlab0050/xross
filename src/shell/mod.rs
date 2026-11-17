@@ -3,6 +3,7 @@
 pub mod layer;
 pub mod snap;
 pub mod ssd;
+pub mod workspace;
 pub mod x11;
 pub mod xdg;
 
@@ -92,7 +93,7 @@ impl XrossState {
         let size = window.geometry().size;
         let title = if has_ssd(&window) { ssd::TITLE_HEIGHT } else { 0 };
 
-        let cascade = 32 * (self.space.elements().count() as i32 % 6);
+        let cascade = 32 * (self.visible_windows().count() as i32 % 6);
         let x = area.loc.x + ((area.size.w - size.w) / 2).max(0) + cascade;
         let y = area.loc.y + title + ((area.size.h - size.h - title) / 2).max(0) + cascade;
         let loc = Point::from((x, y));
@@ -101,6 +102,7 @@ impl XrossState {
         if let Some(x11) = window.x11_surface() {
             let _ = x11.configure(Some(Rectangle::new(loc, size)));
         }
+        self.adopt_window(&window);
         self.space.map_element(window.clone(), loc, false);
         self.focus_window(Some(&window), SERIAL_COUNTER.next_serial());
         self.apply_initial_state(&window);
@@ -134,7 +136,7 @@ impl XrossState {
     /// Focus the top-most window (after the focused one went away).
     pub fn focus_top_window(&mut self) {
         let top =
-            self.space.elements().rev().find(|w| !w.x11_surface().is_some_and(|x| x.is_override_redirect())).cloned();
+            self.visible_windows().rev().find(|w| !w.x11_surface().is_some_and(|x| x.is_override_redirect())).cloned();
         self.focus_window(top.as_ref(), SERIAL_COUNTER.next_serial());
     }
 
@@ -192,15 +194,14 @@ impl XrossState {
 
     /// Whether the top-most window is fullscreen.
     pub fn fullscreen_on_top(&self) -> bool {
-        self.space
-            .elements()
+        self.visible_windows()
             .rev()
             .find(|w| !w.x11_surface().is_some_and(|x| x.is_override_redirect()))
             .is_some_and(snap::is_fullscreen)
     }
 
     fn window_hit(&self, pos: Point<f64, Logical>) -> Option<PointerHit> {
-        for window in self.space.elements().rev() {
+        for window in self.visible_windows().rev() {
             let loc = self.space.element_location(window)?;
             let geo = window.geometry();
 
