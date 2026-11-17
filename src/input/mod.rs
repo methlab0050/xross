@@ -35,9 +35,10 @@ impl XrossState {
             Action::Snap(dir) => self.snap_focused(dir),
             Action::Workspace(dir) => self.switch_workspace(dir),
             Action::MoveToWorkspace(dir) => self.move_window_to_workspace(dir),
-            Action::SwitcherNext | Action::SwitcherPrev => {
-                tracing::info!(?action, "the window switcher arrives in stage 6")
-            }
+            Action::SwitcherNext => self.switcher_step(false),
+            Action::SwitcherPrev => self.switcher_step(true),
+            Action::SwitcherCommit => self.switcher_commit(),
+            Action::SwitcherCancel => self.switcher_cancel(),
             Action::SwitchVt(vt) => {
                 if let Some(udev) = self.udev.as_ref() {
                     udev.borrow_mut().change_vt(vt);
@@ -102,6 +103,18 @@ impl XrossState {
             serial,
             time,
             |state, mods, handle| {
+                // Releasing the switcher's modifier commits (after the filter, since
+                // committing changes keyboard focus). The release itself goes through.
+                if state.switcher_active() && !state.bind_profile.drag_mod_held(mods) {
+                    state.switcher_commit_pending = true;
+                }
+                if key_state == KeyState::Pressed
+                    && state.switcher_active()
+                    && state.switcher_key(handle.modified_sym())
+                {
+                    state.suppressed_keys.insert(keycode);
+                    return FilterResult::Intercept(FilterAction::Noop);
+                }
                 if key_state == KeyState::Released {
                     // Swallow the release of any key whose press we intercepted.
                     if state.suppressed_keys.remove(&keycode) {
@@ -125,6 +138,23 @@ impl XrossState {
         if let Some(FilterAction::Bind(a)) = action {
             self.run_action(a);
         }
+        if std::mem::take(&mut self.switcher_commit_pending) {
+            self.switcher_commit();
+        }
+    }
+
+    /// Keys while the switcher is open: Esc cancels, Enter commits, arrows move the
+    /// selection. Returns whether the key was used.
+    fn switcher_key(&mut self, sym: smithay::input::keyboard::Keysym) -> bool {
+        use smithay::input::keyboard::Keysym;
+        match sym {
+            Keysym::Escape => self.switcher_cancel(),
+            Keysym::Return | Keysym::KP_Enter => self.switcher_commit_pending = true,
+            Keysym::Left | Keysym::Up => self.switcher_step(true),
+            Keysym::Right | Keysym::Down => self.switcher_step(false),
+            _ => return false,
+        }
+        true
     }
 
     pub fn on_pointer_motion(&mut self, pos: Point<f64, Logical>, time: InputTime) {
@@ -162,6 +192,18 @@ impl XrossState {
         let serial = SERIAL_COUNTER.next_serial();
 
         if state == ButtonState::Released && self.suppressed_buttons.remove(&button) {
+            return;
+        }
+
+        // While the switcher is up, clicks pick a tile and never reach clients.
+        if self.switcher_visible() {
+            if state == ButtonState::Pressed {
+                if let Some(i) = self.switcher_tile_at(pointer.current_location()) {
+                    self.switcher_select(i);
+                    self.switcher_commit();
+                }
+                self.suppressed_buttons.insert(button);
+            }
             return;
         }
 

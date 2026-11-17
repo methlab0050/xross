@@ -4,6 +4,7 @@ pub mod camera;
 pub mod layer;
 pub mod snap;
 pub mod ssd;
+pub mod switcher;
 pub mod workspace;
 pub mod x11;
 pub mod xdg;
@@ -120,6 +121,7 @@ impl XrossState {
                     let _ = xwm.raise_window(x11);
                 }
                 keyboard.set_focus(self, Some(KeyboardFocusTarget::Window(window.clone())), serial);
+                self.touch_mru(window);
             }
             None => {
                 for w in self.space.elements() {

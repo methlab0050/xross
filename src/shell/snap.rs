@@ -208,6 +208,7 @@ impl XrossState {
 
     /// A window is going away: drop it from the layout and let its neighbours fill in.
     pub fn forget_window(&mut self, window: &Window) {
+        self.forget_mru(window);
         self.snap_combo.cancel();
         self.snap_snapshot = None;
         let Some(ws) = workspace_of(window) else { return };

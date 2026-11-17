@@ -94,6 +94,12 @@ pub struct XrossState {
     pub active_swipe: Option<u32>,
     /// `xross msg screenshot PATH`: saved after the next frame (nested backend only).
     pub screenshot_request: Option<std::path::PathBuf>,
+    /// Windows by recency of focus, most recent first (all workspaces).
+    pub mru: Vec<Window>,
+    pub switcher: Option<crate::layout::switcher::Session<Window>>,
+    /// The switcher modifier was released inside the keyboard filter; commit after it.
+    pub switcher_commit_pending: bool,
+    pub switcher_ui: std::cell::RefCell<crate::shell::switcher::SwitcherUi>,
 }
 
 impl XrossState {
@@ -169,6 +175,10 @@ impl XrossState {
             suppressed_buttons: HashSet::new(),
             active_swipe: None,
             screenshot_request: None,
+            mru: Vec::new(),
+            switcher: None,
+            switcher_commit_pending: false,
+            switcher_ui: Default::default(),
         }
     }
 

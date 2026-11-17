@@ -10,6 +10,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 bitflags = "2"
 xcursor = "0.3"
 png = "0.17"
+ab_glyph = "0.2"
 
 [dependencies.smithay-drm-extras]
 git = "https://github.com/Smithay/smithay.git"

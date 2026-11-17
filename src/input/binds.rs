@@ -42,9 +42,12 @@ pub enum Action {
     Workspace(Dir),
     /// Workspace-mod+Ctrl/Shift+arrow: take the focused window to the adjacent workspace.
     MoveToWorkspace(Dir),
-    /// Mod+Tab / Mod+Shift+Tab: MRU switcher (stage 6).
+    /// Mod+Tab / Mod+Shift+Tab: MRU switcher.
     SwitcherNext,
     SwitcherPrev,
+    /// Releasing Mod commits; these exist for `xross msg`, where nothing is held.
+    SwitcherCommit,
+    SwitcherCancel,
     /// Ctrl+Alt+F1..F12 on the udev backend.
     SwitchVt(i32),
 }
@@ -77,9 +80,11 @@ impl std::str::FromStr for Action {
             Some("move-to-workspace") => Ok(Action::MoveToWorkspace(dir(1)?)),
             Some("switcher-next") => Ok(Action::SwitcherNext),
             Some("switcher-prev") => Ok(Action::SwitcherPrev),
+            Some("switcher-commit") => Ok(Action::SwitcherCommit),
+            Some("switcher-cancel") => Ok(Action::SwitcherCancel),
             _ => Err(format!(
                 "unknown action '{s}' (expected spawn-terminal, quit, snap DIR, workspace DIR, \
-                 move-to-workspace DIR, switcher-next, switcher-prev)"
+                 move-to-workspace DIR, switcher-next, switcher-prev, switcher-commit, switcher-cancel, screenshot PATH)"
             )),
         }
     }

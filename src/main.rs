@@ -13,6 +13,7 @@ mod render;
 mod screenshot;
 mod shell;
 mod state;
+mod ui;
 
 use input::binds::Profile;
 use smithay::reexports::{calloop::EventLoop, wayland_server::Display};

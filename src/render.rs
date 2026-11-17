@@ -77,6 +77,8 @@ impl XrossState {
             ));
         }
 
+        elements.extend(self.switcher_elements(renderer, scale));
+
         if self.workspace_osd_visible() {
             elements.extend(self.workspace_osd_elements(output_geo, scale).into_iter().map(OutputRenderElement::Solid));
         }
