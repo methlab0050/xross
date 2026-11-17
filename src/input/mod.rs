@@ -1,5 +1,6 @@
 pub mod binds;
 pub mod combo;
+pub mod tap;
 
 use smithay::{
     backend::input::{
@@ -18,6 +19,18 @@ use crate::{focus::KeyboardFocusTarget, grabs::ResizeEdge, shell::PointerHit, st
 
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
+
+/// What the touchpad swipe in progress is driving.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SwipeKind {
+    /// 3 fingers: workspace switching.
+    Workspace,
+    /// 4 fingers: opening/closing the overview.
+    Overview,
+    /// 3 fingers in the open overview: panning, like 2.
+    OverviewPan,
+    Other,
+}
 
 /// Result of the keyboard filter.
 enum FilterAction {
@@ -39,12 +52,29 @@ impl XrossState {
             Action::SwitcherPrev => self.switcher_step(true),
             Action::SwitcherCommit => self.switcher_commit(),
             Action::SwitcherCancel => self.switcher_cancel(),
+            Action::Overview => self.toggle_overview(),
+            Action::OverviewMove(dir) => {
+                use smithay::input::keyboard::Keysym;
+                let sym = match dir {
+                    binds::Dir::Left => Keysym::Left,
+                    binds::Dir::Right => Keysym::Right,
+                    binds::Dir::Up => Keysym::Up,
+                    binds::Dir::Down => Keysym::Down,
+                };
+                self.overview_key(sym);
+            }
+            Action::OverviewEnter => {
+                self.overview_key(smithay::input::keyboard::Keysym::Return);
+            }
+            Action::OverviewPan(dx, dy) => self.overview_pan(dx as f64, dy as f64, Some(self.overview_pan_idle())),
+            Action::OverviewPanEnd => self.overview_pan_end(),
             Action::SwitchVt(vt) => {
                 if let Some(udev) = self.udev.as_ref() {
                     udev.borrow_mut().change_vt(vt);
                 }
             }
         }
+        self.run_overview_pending();
     }
 
     pub fn spawn(&self, cmd: &str) {
@@ -55,6 +85,11 @@ impl XrossState {
     }
 
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
+        self.dispatch_input_event(event);
+        self.run_overview_pending();
+    }
+
+    fn dispatch_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
         match event {
             InputEvent::Keyboard { event, .. } => self.on_keyboard::<I>(event),
             InputEvent::PointerMotion { event, .. } => {
@@ -76,16 +111,22 @@ impl XrossState {
             InputEvent::GestureSwipeBegin { event } => self.on_swipe_begin(event.fingers()),
             InputEvent::GestureSwipeUpdate { event } => {
                 use smithay::backend::input::GestureSwipeUpdateEvent;
-                if self.active_swipe == Some(3) {
-                    self.gesture_update(event.delta_x(), event.delta_y());
+                let (dx, dy) = (event.delta_x(), event.delta_y());
+                match self.active_swipe {
+                    Some(SwipeKind::Workspace) => self.gesture_update(dx, dy),
+                    Some(SwipeKind::Overview) => self.overview_gesture_update(dx, dy),
+                    // Fingers move the content: pan the opposite way.
+                    // Ends with the gesture, so no idle timeout.
+                    Some(SwipeKind::OverviewPan) => self.overview_pan(-dx, -dy, None),
+                    _ => {}
                 }
             }
-            InputEvent::GestureSwipeEnd { event } => {
-                let fingers = self.active_swipe.take();
-                if fingers == Some(3) {
-                    self.gesture_end(event.cancelled());
-                }
-            }
+            InputEvent::GestureSwipeEnd { event } => match self.active_swipe.take() {
+                Some(SwipeKind::Workspace) => self.gesture_end(event.cancelled()),
+                Some(SwipeKind::Overview) => self.overview_gesture_end(event.cancelled()),
+                Some(SwipeKind::OverviewPan) => self.overview_pan_end(),
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -115,6 +156,29 @@ impl XrossState {
                     state.suppressed_keys.insert(keycode);
                     return FilterResult::Intercept(FilterAction::Noop);
                 }
+
+                // The overview modifier(s) tapped alone toggle the overview.
+                let is_modifier = handle.modified_sym().is_modifier_key();
+                match key_state {
+                    KeyState::Pressed => {
+                        state.mod_tap.press(is_modifier, mods.into(), state.bind_profile.overview_tap())
+                    }
+                    KeyState::Released => {
+                        if state.mod_tap.release(mods.into()) {
+                            state.overview_toggle_pending = true;
+                        }
+                    }
+                }
+                // The open overview takes every non-modifier key (VT switching still works).
+                if key_state == KeyState::Pressed && state.overview_open() && !is_modifier {
+                    state.suppressed_keys.insert(keycode);
+                    if let Some(vt) = binds::vt_switch(handle.modified_sym()) {
+                        return FilterResult::Intercept(FilterAction::Bind(vt));
+                    }
+                    state.overview_key(handle.modified_sym());
+                    return FilterResult::Intercept(FilterAction::Noop);
+                }
+
                 if key_state == KeyState::Released {
                     // Swallow the release of any key whose press we intercepted.
                     if state.suppressed_keys.remove(&keycode) {
@@ -160,6 +224,10 @@ impl XrossState {
     pub fn on_pointer_motion(&mut self, pos: Point<f64, Logical>, time: InputTime) {
         let serial = SERIAL_COUNTER.next_serial();
         let pointer = self.seat.get_pointer().unwrap();
+        if self.overview_open() {
+            self.overview_motion(pos);
+        }
+        // pointer_hit finds nothing while the overview is up, so clients lose focus.
         let under = self.pointer_hit(pos).and_then(|h| h.surface());
         pointer.motion(self, under, &MotionEvent { location: pos, serial, time });
         pointer.frame(self);
@@ -190,6 +258,23 @@ impl XrossState {
     fn on_pointer_button(&mut self, button: u32, state: ButtonState, time: InputTime) {
         let pointer = self.seat.get_pointer().unwrap();
         let serial = SERIAL_COUNTER.next_serial();
+
+        // A click with modifiers held means they weren't tapped alone.
+        if state == ButtonState::Pressed && self.seat.get_keyboard().unwrap().modifier_state() != Default::default() {
+            self.mod_tap.spoil();
+        }
+
+        // The open overview owns the pointer: click to pick, drag windows around.
+        if self.overview_open() {
+            if button == BTN_LEFT {
+                self.overview_button(state == ButtonState::Pressed, pointer.current_location());
+            }
+            match state {
+                ButtonState::Pressed => self.suppressed_buttons.insert(button),
+                ButtonState::Released => self.suppressed_buttons.remove(&button),
+            };
+            return;
+        }
 
         if state == ButtonState::Released && self.suppressed_buttons.remove(&button) {
             return;
@@ -283,44 +368,106 @@ impl XrossState {
     }
 
     fn on_swipe_begin(&mut self, fingers: u32) {
-        self.active_swipe = Some(fingers);
-        match fingers {
-            3 => self.gesture_begin(false),
-            // 4 fingers: the overview (stage 7). Others aren't forwarded to clients yet.
-            _ => tracing::debug!(fingers, "unhandled swipe"),
-        }
+        self.mod_tap.spoil();
+        let kind = match fingers {
+            // In the overview, three fingers pan like two.
+            3 if self.overview_open() => SwipeKind::OverviewPan,
+            3 if !self.overview_active() => {
+                self.gesture_begin(false);
+                SwipeKind::Workspace
+            }
+            4 => {
+                self.overview_gesture_begin(false);
+                SwipeKind::Overview
+            }
+            // Others aren't forwarded to clients yet.
+            _ => {
+                tracing::debug!(fingers, "unhandled swipe");
+                SwipeKind::Other
+            }
+        };
+        self.active_swipe = Some(kind);
     }
 
-    /// Nested, real multi-finger swipes never reach us, so the workspace modifier plus a
-    /// two-finger scroll drives the same swipe. Returns true if the event was used.
+    /// Nested, real multi-finger swipes never reach us, so two-finger scrolls with a
+    /// modifier stand in: the workspace modifier for 3-finger (workspace) swipes, the
+    /// window modifier for 4-finger (overview) swipes. Returns true if the event was used.
     fn emulated_swipe<I: InputBackend>(&mut self, event: &I::PointerAxisEvent) -> bool {
+        #[derive(PartialEq)]
+        enum Kind {
+            Workspace,
+            Overview,
+        }
         if event.source() != AxisSource::Finger || self.active_swipe.is_some() {
             return false;
         }
-        let emulating = self.camera.gesture.as_ref().is_some_and(|g| g.emulated);
         let mods = self.seat.get_keyboard().unwrap().modifier_state();
-        if !emulating && !self.bind_profile.workspace_mod_held(&mods) {
+        let kind = if self.camera.gesture.as_ref().is_some_and(|g| g.emulated) {
+            Kind::Workspace
+        } else if self.overview_gesture_emulated() {
+            Kind::Overview
+        } else if self.bind_profile.workspace_mod_held(&mods) && self.overview_active() {
+            // The 3-finger stand-in pans the overview, like a plain scroll.
             return false;
-        }
+        } else if self.bind_profile.workspace_mod_held(&mods) {
+            Kind::Workspace
+        } else if self.bind_profile.drag_mod_held(&mods) {
+            Kind::Overview
+        } else {
+            return false;
+        };
+        let emulating = self.camera.gesture.as_ref().is_some_and(|g| g.emulated) || self.overview_gesture_emulated();
+        self.mod_tap.spoil();
+
         let (h, v) = (event.amount(Axis::Horizontal).unwrap_or(0.0), event.amount(Axis::Vertical).unwrap_or(0.0));
+        let stop = h == 0.0 && v == 0.0;
         if !emulating {
-            if h == 0.0 && v == 0.0 {
+            if stop {
                 return true;
             }
-            self.gesture_begin(true);
+            match kind {
+                Kind::Workspace => self.gesture_begin(true),
+                Kind::Overview => self.overview_gesture_begin(true),
+            }
         }
-        if h == 0.0 && v == 0.0 {
-            // Scroll stop: the fingers lifted.
-            self.gesture_end(false);
-        } else {
-            // Scroll amounts move content; fingers move the opposite way (natural scrolling).
-            self.gesture_update(-h, -v);
+        // Scroll amounts move content; fingers move the opposite way (natural scrolling).
+        match (kind, stop) {
+            (Kind::Workspace, true) => self.gesture_end(false),
+            (Kind::Workspace, false) => self.gesture_update(-h, -v),
+            (Kind::Overview, true) => self.overview_gesture_end(false),
+            (Kind::Overview, false) => self.overview_gesture_update(-h, -v),
         }
         true
     }
 
     fn on_pointer_axis<I: InputBackend>(&mut self, event: I::PointerAxisEvent) {
         if self.emulated_swipe::<I>(&event) {
+            return;
+        }
+        // Scrolling pans the open overview and snaps to a workspace when it stops;
+        // a mouse wheel steps one workspace per notch.
+        if self.overview_open() {
+            let (h, v) = (event.amount(Axis::Horizontal).unwrap_or(0.0), event.amount(Axis::Vertical).unwrap_or(0.0));
+            match event.source() {
+                AxisSource::Wheel | AxisSource::WheelTilt => {
+                    let (h120, v120) = (
+                        event.amount_v120(Axis::Horizontal).unwrap_or(0.0),
+                        event.amount_v120(Axis::Vertical).unwrap_or(0.0),
+                    );
+                    let dir = match (h120, v120) {
+                        (_, v) if v > 0.0 => Some(binds::Dir::Down),
+                        (_, v) if v < 0.0 => Some(binds::Dir::Up),
+                        (h, _) if h > 0.0 => Some(binds::Dir::Right),
+                        (h, _) if h < 0.0 => Some(binds::Dir::Left),
+                        _ => None,
+                    };
+                    if let Some(dir) = dir {
+                        self.overview_wheel_step(dir);
+                    }
+                }
+                AxisSource::Finger if h == 0.0 && v == 0.0 => self.overview_pan_end(),
+                _ => self.overview_pan(h, v, Some(self.overview_pan_idle())),
+            }
             return;
         }
         let source = event.source();

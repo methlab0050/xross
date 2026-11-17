@@ -2,6 +2,7 @@
 
 pub mod camera;
 pub mod layer;
+pub mod overview;
 pub mod snap;
 pub mod ssd;
 pub mod switcher;
@@ -161,6 +162,10 @@ impl XrossState {
     /// Everything under the pointer, in stacking order:
     /// overlay/top layers, then windows (incl. title bars), then bottom/background layers.
     pub fn pointer_hit(&self, pos: Point<f64, Logical>) -> Option<PointerHit> {
+        // The overview draws everything itself; clients get no pointer focus meanwhile.
+        if self.overview_active() {
+            return None;
+        }
         let output = self.space.outputs().next()?;
         let output_loc = self.space.output_geometry(output)?.loc;
         let layers = layer_map_for_output(output);

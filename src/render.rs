@@ -1,6 +1,12 @@
 //! Builds the per-frame render element list for an output, front-to-back:
-//! cursor, workspace OSD, overlay/top layers, windows (each with its title bar),
-//! bottom/background layers.
+//! cursor, switcher, workspace OSD, a window being dragged in the overview,
+//! overlay/top layers, workspaces (windows with title bars, plus overview tiles and
+//! slots), bottom/background layers.
+//!
+//! Workspaces are drawn through [`XrossState::workspace_views`], which covers the
+//! normal view, sliding between workspaces, and the overview alike.
+
+use std::collections::HashMap;
 
 use smithay::{
     backend::renderer::{
@@ -13,18 +19,19 @@ use smithay::{
         },
         gles::GlesRenderer,
     },
-    desktop::layer_map_for_output,
+    desktop::{Window, layer_map_for_output},
     output::Output,
     utils::{Logical, Physical, Point, Rectangle, Scale, Size},
     wayland::shell::wlr_layer::Layer,
 };
 
 use crate::{
+    layout::grid::Coord,
     shell::{
         PointerHit, has_ssd,
         snap::{OPEN_SCALE, open_progress, tick_window_animations},
         ssd::{self, DecorationStyle},
-        workspace::workspace_of,
+        workspace::{WsId, workspace_of},
     },
     state::XrossState,
 };
@@ -32,10 +39,11 @@ use crate::{
 smithay::backend::renderer::element::render_elements! {
     pub OutputRenderElement<=GlesRenderer>;
     Surface=WaylandSurfaceRenderElement<GlesRenderer>,
-    /// Window surfaces: scaled for animations, cropped to their workspace.
+    /// Window surfaces: scaled for animations and the overview, cropped to their workspace.
     Window=CropRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>,
     Solid=SolidColorRenderElement,
-    CroppedSolid=CropRenderElement<SolidColorRenderElement>,
+    /// Title bars, scaled and cropped like their windows.
+    CroppedSolid=CropRenderElement<RescaleRenderElement<SolidColorRenderElement>>,
     Memory=MemoryRenderBufferRenderElement<GlesRenderer>,
 }
 
@@ -51,6 +59,14 @@ const OSD_EMPTY: [f32; 4] = [0.20, 0.20, 0.23, 1.0];
 const OSD_ACTIVE: [f32; 4] = [0.50, 0.52, 0.57, 1.0];
 const OSD_CURRENT: [f32; 4] = [0.36, 0.56, 0.96, 1.0];
 
+// Overview.
+const TILE_BG: [f32; 4] = [0.12, 0.12, 0.15, 1.0];
+const SLOT_BG: [f32; 4] = [0.10, 0.10, 0.12, 1.0];
+const SLOT_BORDER: [f32; 4] = [0.22, 0.22, 0.26, 1.0];
+const RING: [f32; 4] = [0.36, 0.56, 0.96, 1.0];
+const RING_WIDTH: f64 = 3.0;
+const DRAG_ALPHA: f32 = 0.85;
+
 /// Buffers for the workspace minimap, reused across frames so damage stays minimal.
 #[derive(Default)]
 pub struct OsdBuffers {
@@ -58,12 +74,81 @@ pub struct OsdBuffers {
     cells: Vec<SolidColorBuffer>,
 }
 
+/// Buffers for overview tiles and slots, keyed so their ids stay stable.
+#[derive(Default)]
+pub struct OverviewBuffers {
+    tiles: HashMap<WsId, SolidColorBuffer>,
+    slots: HashMap<Coord, (SolidColorBuffer, SolidColorBuffer)>,
+    ring: SolidColorBuffer,
+}
+
+fn solid(
+    buf: &mut SolidColorBuffer,
+    rect: Rectangle<f64, Logical>,
+    color: [f32; 4],
+    alpha: f32,
+    scale: Scale<f64>,
+) -> SolidColorRenderElement {
+    let r = rect.to_i32_round::<i32>();
+    buf.update(r.size, color);
+    SolidColorRenderElement::from_buffer(buf, r.loc.to_physical_precise_round(scale), scale, alpha, Kind::Unspecified)
+}
+
 impl XrossState {
+    /// Draw `window` with its content filling `target` (output-local), title bar scaled
+    /// by `deco_scale`, everything cropped to `crop`.
+    #[allow(clippy::too_many_arguments)]
+    fn push_window(
+        &self,
+        renderer: &mut GlesRenderer,
+        elements: &mut Vec<OutputRenderElement>,
+        window: &Window,
+        target: Rectangle<f64, Logical>,
+        deco_scale: f64,
+        crop: Rectangle<i32, Physical>,
+        alpha: f32,
+        style: Option<DecorationStyle>,
+        scale: Scale<f64>,
+    ) {
+        let geo = window.geometry();
+        let stretch =
+            Scale { x: target.size.w / geo.size.w.max(1) as f64, y: target.size.h / geo.size.h.max(1) as f64 };
+        let origin: Point<i32, Physical> = target.loc.to_physical_precise_round(scale);
+        let surface_loc = origin - geo.loc.to_physical_precise_round(scale);
+        elements.extend(
+            window
+                .render_elements::<WaylandSurfaceRenderElement<GlesRenderer>>(renderer, surface_loc, scale, alpha)
+                .into_iter()
+                .filter_map(|e| {
+                    let e = RescaleRenderElement::from_element(e, origin, stretch);
+                    CropRenderElement::from_element(e, scale, crop).map(OutputRenderElement::Window)
+                }),
+        );
+
+        if let Some(style) = style.filter(|_| has_ssd(window)) {
+            // Lay the title bar out at full size anchored at the content origin, then
+            // scale it around that origin like the content.
+            let unscaled = Rectangle::new(target.loc, target.size.downscale(deco_scale)).to_i32_round::<i32>();
+            elements.extend(
+                ssd::render_elements(window, unscaled, Point::default(), scale, style, alpha)
+                    .into_iter()
+                    .filter_map(|e| {
+                        let e = RescaleRenderElement::from_element(e, origin, deco_scale);
+                        CropRenderElement::from_element(e, scale, crop)
+                    })
+                    .map(OutputRenderElement::CroppedSolid),
+            );
+        }
+    }
+
     pub fn output_elements(&self, renderer: &mut GlesRenderer, output: &Output) -> Vec<OutputRenderElement> {
         let Some(output_geo) = self.space.output_geometry(output) else {
             return Vec::new();
         };
         let scale = Scale::from(output.current_scale().fractional_scale());
+        let now = self.start_time.elapsed();
+        let p = self.overview_progress(now);
+        let in_overview = p > 0.0 || self.overview_active();
         let mut elements = Vec::new();
 
         let pointer_pos = self.seat.get_pointer().unwrap().current_location();
@@ -73,14 +158,19 @@ impl XrossState {
                 &self.cursor_status,
                 pointer_pos - output_geo.loc.to_f64(),
                 scale,
-                self.start_time.elapsed(),
+                now,
             ));
         }
 
         elements.extend(self.switcher_elements(renderer, scale));
 
-        if self.workspace_osd_visible() {
+        if self.workspace_osd_visible() && !in_overview {
             elements.extend(self.workspace_osd_elements(output_geo, scale).into_iter().map(OutputRenderElement::Solid));
+        }
+
+        let output_crop = Rectangle::from_size(output_geo.size.to_physical_precise_round(scale));
+        if let Some((window, target, s)) = self.dragged_window(now) {
+            self.push_window(renderer, &mut elements, &window, target, s, output_crop, DRAG_ALPHA, None, scale);
         }
 
         // Must run before locking the layer map below (pointer_hit locks it too).
@@ -91,38 +181,48 @@ impl XrossState {
         });
 
         let layers = layer_map_for_output(output);
-        let push_layers = |renderer: &mut GlesRenderer, elements: &mut Vec<OutputRenderElement>, kind: Layer| {
-            // layers_on() is bottom-to-top within a layer; we need front-to-back.
-            for layer in layers.layers_on(kind).rev() {
-                let Some(geo) = layers.layer_geometry(layer) else {
-                    continue;
-                };
-                let loc = (geo.loc - layer.geometry().loc).to_physical_precise_round(scale);
-                elements.extend(
-                    layer
-                        .render_elements::<WaylandSurfaceRenderElement<GlesRenderer>>(renderer, loc, scale, 1.0)
-                        .into_iter()
-                        .map(OutputRenderElement::Surface),
-                );
-            }
-        };
+        let push_layers =
+            |renderer: &mut GlesRenderer, elements: &mut Vec<OutputRenderElement>, kind: Layer, alpha: f32| {
+                if alpha <= 0.0 {
+                    return;
+                }
+                // layers_on() is bottom-to-top within a layer; we need front-to-back.
+                for layer in layers.layers_on(kind).rev() {
+                    let Some(geo) = layers.layer_geometry(layer) else {
+                        continue;
+                    };
+                    let loc = (geo.loc - layer.geometry().loc).to_physical_precise_round(scale);
+                    elements.extend(
+                        layer
+                            .render_elements::<WaylandSurfaceRenderElement<GlesRenderer>>(renderer, loc, scale, alpha)
+                            .into_iter()
+                            .map(OutputRenderElement::Surface),
+                    );
+                }
+            };
 
-        // A fullscreen window on top covers panels too (but not overlays like notifications).
-        let fullscreen_on_top = self.fullscreen_on_top();
-        push_layers(renderer, &mut elements, Layer::Overlay);
+        // Panels fade out as the overview opens. A fullscreen window on top covers them
+        // too (but not overlays like notifications).
+        let panel_alpha = (1.0 - p.clamp(0.0, 1.0)) as f32;
+        let fullscreen_on_top = !in_overview && self.fullscreen_on_top();
+        push_layers(renderer, &mut elements, Layer::Overlay, 1.0);
         if !fullscreen_on_top {
-            push_layers(renderer, &mut elements, Layer::Top);
+            push_layers(renderer, &mut elements, Layer::Top, panel_alpha);
         }
 
-        let now = self.start_time.elapsed();
         let views = self.workspace_views(now);
-        let output_size = output_geo.size.to_physical_precise_round(scale);
+        let full = Rectangle::from_size(output_geo.size.to_f64());
         for window in self.space.elements().rev() {
-            // Windows on workspaces out of view are skipped; untagged ones (X11 menus) stick.
-            let offset = match workspace_of(window) {
-                None => Point::default(),
-                Some(ws) => match views.iter().find(|(id, _)| *id == ws) {
-                    Some((_, offset)) => *offset,
+            if self.is_dragged(window) {
+                continue;
+            }
+            // Windows on workspaces out of view are skipped; untagged ones (X11 menus)
+            // stick to the screen, but not in the overview.
+            let (tile, s) = match workspace_of(window) {
+                None if in_overview => continue,
+                None => (full, 1.0),
+                Some(ws) => match views.iter().find(|v| v.id == Some(ws)) {
+                    Some(v) => (v.rect, v.scale),
                     None => continue,
                 },
             };
@@ -130,58 +230,78 @@ impl XrossState {
                 continue;
             };
             let mut alpha = 1.0f32;
-            if let Some(p) = open_progress(window, now) {
-                alpha = p.clamp(0.0, 1.0) as f32;
-                let k = OPEN_SCALE + (1.0 - OPEN_SCALE) * p;
+            if let Some(op) = open_progress(window, now) {
+                alpha = op.clamp(0.0, 1.0) as f32;
+                let k = OPEN_SCALE + (1.0 - OPEN_SCALE) * op;
                 let center = rect.loc + rect.size.to_point().downscale(2.0);
                 rect.size = rect.size.upscale(k);
                 rect.loc = center - rect.size.to_point().downscale(2.0);
             }
-            // Output-local from here on.
-            rect.loc += offset - output_geo.loc.to_f64();
-            let content = rect.to_i32_round::<i32>();
-            let local_output = Rectangle::from_size(output_geo.size);
-            if !local_output.overlaps(content) && !local_output.overlaps(ssd::title_rect(content)) {
+            // Into the tile: output-local, scaled.
+            let target =
+                Rectangle::new(tile.loc + (rect.loc - output_geo.loc.to_f64()).upscale(s), rect.size.upscale(s));
+            let title = ssd::TITLE_HEIGHT as f64 * s;
+            let with_title =
+                Rectangle::new(target.loc - Point::from((0.0, title)), target.size + Size::from((0.0, title)));
+            if !full.overlaps(with_title) {
                 continue;
             }
+            // Crop to the window's own workspace so nothing spills into a neighbour.
+            let crop = tile.to_physical_precise_round(scale);
+            let style = DecorationStyle {
+                focused: focused.as_ref() == Some(window),
+                close_hovered: hovered_close.as_ref() == Some(window),
+            };
+            self.push_window(renderer, &mut elements, window, target, s, crop, alpha, Some(style), scale);
+        }
 
-            // Crop to the window's own workspace so nothing spills into a neighbour mid-slide.
-            let crop = Rectangle::new(offset.to_physical_precise_round(scale), output_size);
-            let geo = window.geometry();
-            let stretch =
-                Scale { x: rect.size.w / geo.size.w.max(1) as f64, y: rect.size.h / geo.size.h.max(1) as f64 };
-            let origin: Point<i32, Physical> = rect.loc.to_physical_precise_round(scale);
-            let surface_loc = origin - geo.loc.to_physical_precise_round(scale);
-            elements.extend(
-                window
-                    .render_elements::<WaylandSurfaceRenderElement<GlesRenderer>>(renderer, surface_loc, scale, alpha)
-                    .into_iter()
-                    .filter_map(|e| {
-                        let e = RescaleRenderElement::from_element(e, origin, stretch);
-                        CropRenderElement::from_element(e, scale, crop).map(OutputRenderElement::Window)
-                    }),
-            );
-
-            if has_ssd(window) {
-                let style = DecorationStyle {
-                    focused: focused.as_ref() == Some(window),
-                    close_hovered: hovered_close.as_ref() == Some(window),
-                };
-                elements.extend(
-                    ssd::render_elements(window, content, Point::default(), scale, style, alpha)
-                        .into_iter()
-                        .filter_map(|e| CropRenderElement::from_element(e, scale, crop))
-                        .map(OutputRenderElement::CroppedSolid),
-                );
-            }
+        if in_overview {
+            elements.extend(self.overview_backdrop(&views, p.clamp(0.0, 1.0) as f32, scale));
         }
 
         if fullscreen_on_top {
-            push_layers(renderer, &mut elements, Layer::Top);
+            push_layers(renderer, &mut elements, Layer::Top, panel_alpha);
         }
-        push_layers(renderer, &mut elements, Layer::Bottom);
-        push_layers(renderer, &mut elements, Layer::Background);
+        push_layers(renderer, &mut elements, Layer::Bottom, panel_alpha);
+        push_layers(renderer, &mut elements, Layer::Background, 1.0);
         elements
+    }
+
+    /// Overview tile backgrounds, drop slots and the selection ring (front to back).
+    fn overview_backdrop(
+        &self,
+        views: &[crate::shell::overview::WsView],
+        alpha: f32,
+        scale: Scale<f64>,
+    ) -> Vec<OutputRenderElement> {
+        let now = self.start_time.elapsed();
+        let mut ui = self.overview_ui.borrow_mut();
+        let ui = &mut *ui;
+        let mut out = Vec::new();
+        for v in views {
+            let Some(id) = v.id else { continue };
+            let buf = ui.tiles.entry(id).or_default();
+            out.push(OutputRenderElement::Solid(solid(buf, v.rect, TILE_BG, alpha, scale)));
+        }
+        ui.tiles.retain(|id, _| views.iter().any(|v| v.id == Some(*id)));
+
+        let slots = self.slot_views(now);
+        for s in &slots {
+            let (fill, border) = ui.slots.entry(s.coord).or_default();
+            let inner = Rectangle::new(s.rect.loc + Point::from((2.0, 2.0)), s.rect.size - Size::from((4.0, 4.0)));
+            out.push(OutputRenderElement::Solid(solid(fill, inner, SLOT_BG, alpha, scale)));
+            out.push(OutputRenderElement::Solid(solid(border, s.rect, SLOT_BORDER, alpha, scale)));
+        }
+        ui.slots.retain(|c, _| slots.iter().any(|s| s.coord == *c));
+
+        if let Some(r) = self.selection_rect(now) {
+            let ring = Rectangle::new(
+                r.loc - Point::from((RING_WIDTH, RING_WIDTH)),
+                r.size + Size::from((2.0 * RING_WIDTH, 2.0 * RING_WIDTH)),
+            );
+            out.push(OutputRenderElement::Solid(solid(&mut ui.ring, ring, RING, alpha, scale)));
+        }
+        out
     }
 }
 
@@ -238,11 +358,12 @@ impl XrossState {
 
         let now = self.start_time.elapsed();
         self.tick_camera();
+        self.tick_overview();
         tick_window_animations(self.space.elements(), now);
 
         // Frames for every window on screen, including neighbours sliding in.
         let throttle = Some(std::time::Duration::ZERO);
-        let in_view: Vec<_> = self.workspace_views(now).into_iter().map(|(id, _)| id).collect();
+        let in_view: Vec<_> = self.workspace_views(now).into_iter().filter_map(|v| v.id).collect();
         for window in self.space.elements() {
             if workspace_of(window).is_none_or(|ws| in_view.contains(&ws)) {
                 window.send_frame(output, now, throttle, |_, _| Some(output.clone()));

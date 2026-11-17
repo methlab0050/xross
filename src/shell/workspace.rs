@@ -99,7 +99,7 @@ impl XrossState {
         self.tiling(workspace_of(window)?)?.slot_of(window)
     }
 
-    fn new_workspace(next_id: &mut WsId) -> Workspace {
+    pub(super) fn new_workspace(next_id: &mut WsId) -> Workspace {
         *next_id += 1;
         Workspace::new(*next_id)
     }
@@ -136,31 +136,38 @@ impl XrossState {
             return;
         };
         self.pin_camera();
-        let from = self.current_ws();
-        let slot = self.slot_of(&window);
-
         let to = neighbour(self.workspaces.current(), dir);
         let next_id = &mut self.next_ws_id;
         self.workspaces.switch_to(to, || Self::new_workspace(next_id));
         let to_ws = self.current_ws();
-        set_workspace(&window, to_ws);
-
-        if slot.is_some() {
-            let before = self.tiling(to_ws).cloned().unwrap_or_default();
-            if let Some(t) = self.tiling_mut(to_ws) {
-                t.assign(&window, slot);
-            }
-            // Its restore rect is still the one from when it was floating.
-            self.apply_tiling_change(to_ws, &before, Some(&window), true);
-            let before = self.tiling(from).cloned().unwrap_or_default();
-            if let Some(t) = self.tiling_mut(from) {
-                t.remove(&window);
-            }
-            self.apply_tiling_change(from, &before, None, false);
-        }
+        self.transfer_window(&window, to_ws);
         self.enter_workspace(to);
         self.focus_window(Some(&window), SERIAL_COUNTER.next_serial());
         self.animate_switch();
+    }
+
+    /// Move a window to another workspace, keeping its position and snap slot (which
+    /// displaces windows there by the usual rules).
+    pub fn transfer_window(&mut self, window: &Window, to_ws: WsId) {
+        let Some(from) = workspace_of(window) else { return };
+        if from == to_ws {
+            return;
+        }
+        let slot = self.slot_of(window);
+        set_workspace(window, to_ws);
+        if slot.is_some() {
+            let before = self.tiling(to_ws).cloned().unwrap_or_default();
+            if let Some(t) = self.tiling_mut(to_ws) {
+                t.assign(window, slot);
+            }
+            // Its restore rect is still the one from when it was floating.
+            self.apply_tiling_change(to_ws, &before, Some(window), true);
+            let before = self.tiling(from).cloned().unwrap_or_default();
+            if let Some(t) = self.tiling_mut(from) {
+                t.remove(window);
+            }
+            self.apply_tiling_change(from, &before, None, false);
+        }
     }
 
     /// The logical part of a switch: make `to` current, move keyboard and pointer focus

@@ -90,8 +90,8 @@ pub struct XrossState {
     pub suppressed_keys: HashSet<Keycode>,
     /// Pointer buttons whose press the compositor consumed (e.g. close button).
     pub suppressed_buttons: HashSet<u32>,
-    /// Finger count of the touchpad swipe in progress.
-    pub active_swipe: Option<u32>,
+    /// What the touchpad swipe in progress drives.
+    pub active_swipe: Option<crate::input::SwipeKind>,
     /// `xross msg screenshot PATH`: saved after the next frame (nested backend only).
     pub screenshot_request: Option<std::path::PathBuf>,
     /// Windows by recency of focus, most recent first (all workspaces).
@@ -100,6 +100,14 @@ pub struct XrossState {
     /// The switcher modifier was released inside the keyboard filter; commit after it.
     pub switcher_commit_pending: bool,
     pub switcher_ui: std::cell::RefCell<crate::shell::switcher::SwitcherUi>,
+    pub overview: crate::shell::overview::Overview,
+    pub overview_ui: std::cell::RefCell<crate::render::OverviewBuffers>,
+    /// Detects the workspace modifier tapped alone (toggles the overview).
+    pub mod_tap: crate::input::tap::ModTap,
+    /// Overview actions deferred until after keyboard/pointer handling (they move focus).
+    pub overview_toggle_pending: bool,
+    pub overview_close_pending: Option<Option<crate::layout::grid::Coord>>,
+    pub overview_focus_pending: Option<Window>,
 }
 
 impl XrossState {
@@ -179,6 +187,12 @@ impl XrossState {
             switcher: None,
             switcher_commit_pending: false,
             switcher_ui: Default::default(),
+            overview: Default::default(),
+            overview_ui: Default::default(),
+            mod_tap: Default::default(),
+            overview_toggle_pending: false,
+            overview_close_pending: None,
+            overview_focus_pending: None,
         }
     }
 

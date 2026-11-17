@@ -72,6 +72,29 @@ impl<W> Grid<W> {
         (from_active || to_active).then_some(to)
     }
 
+    /// Add a workspace at `c` unless one is there already.
+    pub fn insert(&mut self, c: Coord, make: impl FnOnce() -> W) {
+        self.cells.entry(c).or_insert_with(make);
+    }
+
+    /// Empty cells next to active workspaces: where a new workspace could go.
+    pub fn slots(&self, active: impl Fn(&W) -> bool) -> Vec<Coord> {
+        let mut out: Vec<Coord> = Vec::new();
+        for (c, w) in &self.cells {
+            if !active(w) {
+                continue;
+            }
+            for dir in [Dir::Left, Dir::Right, Dir::Up, Dir::Down] {
+                let n = neighbour(*c, dir);
+                if !self.cells.contains_key(&n) && !out.contains(&n) {
+                    out.push(n);
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
     /// Make `to` current, creating an empty workspace there if needed.
     pub fn switch_to(&mut self, to: Coord, make: impl FnOnce() -> W) {
         self.cells.entry(to).or_insert_with(make);
@@ -222,6 +245,21 @@ mod tests {
         let mut g = grid(&[((-1, 0), Ws("l", 1)), ((2, 0), Ws("r", 1))], (2, 0));
         g.compact(active);
         assert_eq!(named(&g), vec![((-1, 0), "l"), ((0, 0), "r")]);
+    }
+
+    #[test]
+    fn slots_surround_active_workspaces() {
+        let g = grid(&[((0, 0), Ws("a", 1)), ((1, 0), Ws("empty", 0))], (1, 0));
+        // Around (0,0), minus the existing (1,0); the empty workspace has no slots of its own.
+        assert_eq!(g.slots(active), vec![(-1, 0), (0, -1), (0, 1)]);
+    }
+
+    #[test]
+    fn insert_keeps_existing() {
+        let mut g = grid(&[((0, 0), Ws("a", 1))], (0, 0));
+        g.insert((0, 0), || Ws("new", 0));
+        g.insert((0, 1), || Ws("b", 0));
+        assert_eq!(named(&g), vec![((0, 0), "a"), ((0, 1), "b")]);
     }
 
     #[test]

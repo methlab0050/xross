@@ -6,10 +6,7 @@
 
 use std::time::Duration;
 
-use smithay::{
-    reexports::calloop::timer::{TimeoutAction, Timer},
-    utils::{Logical, Point},
-};
+use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 
 use crate::{
     anim::{
@@ -18,7 +15,6 @@ use crate::{
     },
     input::binds::Dir,
     layout::grid::{Coord, neighbour},
-    shell::workspace::WsId,
     state::XrossState,
 };
 
@@ -98,20 +94,6 @@ impl XrossState {
             }
         }
         pos
-    }
-
-    /// Workspaces in view and their offsets from the output origin (logical px).
-    pub fn workspace_views(&self, now: Duration) -> Vec<(WsId, Point<f64, Logical>)> {
-        let size = self.output_rect().size;
-        let (sw, sh) = ((size.w + WORKSPACE_GAP) as f64, (size.h + WORKSPACE_GAP) as f64);
-        let (cx, cy) = self.camera_pos(now);
-        self.workspaces
-            .iter()
-            .filter_map(|((x, y), ws)| {
-                let (dx, dy) = ((x as f64 - cx) * sw, (y as f64 - cy) * sh);
-                (dx.abs() < sw && dy.abs() < sh).then(|| (ws.id, Point::from((dx, dy))))
-            })
-            .collect()
     }
 
     /// Which way a swipe on `axis` from `origin` may go: (negative, positive).
@@ -250,6 +232,24 @@ impl XrossState {
         self.animate_camera_home(Some((axis, velocity)));
     }
 
+    /// Snap the camera onto the current workspace (the overview zooms out onto it).
+    pub fn settle_camera(&mut self) {
+        self.camera.x = None;
+        self.camera.y = None;
+        self.camera.gesture = None;
+        self.camera.pending_compact = true;
+    }
+
+    /// Grid coordinates moved by `d` (compaction): move any running camera animation along.
+    pub fn shift_camera(&mut self, d: (f64, f64)) {
+        let now = self.now();
+        let shift = |a: Option<Animation>, by: f64| {
+            a.map(|a| Animation::new(a.value(now) + by, a.to() + by, a.velocity(now), SWITCH_SPRING, now))
+        };
+        self.camera.x = shift(self.camera.x, d.0);
+        self.camera.y = shift(self.camera.y, d.1);
+    }
+
     /// Per-frame: drop finished animations, and compact once everything has settled.
     pub fn tick_camera(&mut self) {
         let now = self.now();
@@ -259,7 +259,8 @@ impl XrossState {
         if self.camera.y.is_some_and(|a| a.is_done(now)) {
             self.camera.y = None;
         }
-        if !self.camera.is_moving() && self.camera.pending_compact {
+        // Wait for the overview too: compacting mid-zoom would move workspaces under it.
+        if !self.camera.is_moving() && !self.overview_active() && self.camera.pending_compact {
             self.camera.pending_compact = false;
             self.compact_workspaces();
         }

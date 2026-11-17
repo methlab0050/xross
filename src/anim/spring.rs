@@ -88,7 +88,6 @@ impl Animation {
         if self.is_done(now) { 0.0 } else { self.spring.velocity_at(self.t(now)) }
     }
 
-    #[cfg(test)]
     pub fn to(&self) -> f64 {
         self.spring.to
     }

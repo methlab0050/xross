@@ -3,6 +3,9 @@
 //! The dev profile uses Alt as the window modifier and Shift+Alt as the workspace
 //! modifier, so binds work nested inside GNOME (which grabs Super). The prod profile
 //! uses Super and Ctrl+Super. Ctrl+` (terminal) is shared.
+//!
+//! Tapping a modifier combination alone toggles the overview: Shift+Alt in dev,
+//! Super in prod (see [`Profile::overview_tap`] and `input::tap`).
 
 use smithay::input::keyboard::{Keysym, ModifiersState};
 
@@ -48,6 +51,14 @@ pub enum Action {
     /// Releasing Mod commits; these exist for `xross msg`, where nothing is held.
     SwitcherCommit,
     SwitcherCancel,
+    /// Toggle the overview (bound to tapping the workspace modifier, see `input::tap`).
+    Overview,
+    /// Overview navigation for `xross msg` (keys do this directly while it's open).
+    OverviewMove(Dir),
+    OverviewEnter,
+    /// Pan the overview by screen pixels, then let go (what two/three fingers do).
+    OverviewPan(i32, i32),
+    OverviewPanEnd,
     /// Ctrl+Alt+F1..F12 on the udev backend.
     SwitchVt(i32),
 }
@@ -82,9 +93,19 @@ impl std::str::FromStr for Action {
             Some("switcher-prev") => Ok(Action::SwitcherPrev),
             Some("switcher-commit") => Ok(Action::SwitcherCommit),
             Some("switcher-cancel") => Ok(Action::SwitcherCancel),
+            Some("overview") => Ok(Action::Overview),
+            Some("overview-move") => Ok(Action::OverviewMove(dir(1)?)),
+            Some("overview-enter") => Ok(Action::OverviewEnter),
+            Some("overview-pan") => {
+                let n = |i: usize| -> Result<i32, String> {
+                    words.get(i).and_then(|w| w.parse().ok()).ok_or_else(|| format!("'{s}' needs DX DY"))
+                };
+                Ok(Action::OverviewPan(n(1)?, n(2)?))
+            }
+            Some("overview-pan-end") => Ok(Action::OverviewPanEnd),
             _ => Err(format!(
                 "unknown action '{s}' (expected spawn-terminal, quit, snap DIR, workspace DIR, \
-                 move-to-workspace DIR, switcher-next, switcher-prev, switcher-commit, switcher-cancel, screenshot PATH)"
+                 move-to-workspace DIR, switcher-next, switcher-prev, switcher-commit, switcher-cancel, overview, overview-move DIR, overview-enter, overview-pan DX DY, overview-pan-end, screenshot PATH)"
             )),
         }
     }
@@ -130,7 +151,15 @@ impl Profile {
         }
     }
 
-    /// Modifier for workspace actions; tapped alone it toggles the overview (stage 7).
+    /// Modifiers that, tapped alone, toggle the overview.
+    pub fn overview_tap(self) -> Mods {
+        match self {
+            Profile::Dev => Mods::SHIFT_ALT,
+            Profile::Prod => Mods::LOGO,
+        }
+    }
+
+    /// Modifier for workspace actions.
     pub fn workspace_mod(self) -> Mods {
         match self {
             Profile::Dev => Mods::SHIFT_ALT,
@@ -241,6 +270,12 @@ mod tests {
         assert_eq!(lookup(p, Mods::ALT, Keysym::Tab), Some(Action::SwitcherNext));
         assert_eq!(lookup(p, Mods::SHIFT_ALT, Keysym::Tab), Some(Action::SwitcherPrev));
         assert_eq!(lookup(p, Mods::LOGO, Keysym::Right), None);
+    }
+
+    #[test]
+    fn overview_tap_combos() {
+        assert_eq!(Profile::Dev.overview_tap(), Mods::SHIFT_ALT);
+        assert_eq!(Profile::Prod.overview_tap(), Mods::LOGO, "Super alone, like GNOME");
     }
 
     #[test]
