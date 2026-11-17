@@ -50,8 +50,6 @@ smithay::backend::renderer::element::render_elements! {
     Decoration=CropRenderElement<RescaleRenderElement<DecorationElement>>,
     /// Title bars as-is (close-animation snapshots).
     PlainDecoration=DecorationElement,
-    /// The blurred backdrop behind empty workspaces in the overview.
-    Backdrop=smithay::backend::renderer::element::texture::TextureRenderElement<smithay::backend::renderer::gles::GlesTexture>,
     /// Shadows behind decorated windows.
     Shadow=CropRenderElement<smithay::backend::renderer::gles::element::PixelShaderElement>,
     Memory=MemoryRenderBufferRenderElement<GlesRenderer>,
@@ -73,7 +71,6 @@ const OSD_CURRENT: [f32; 4] = [0.36, 0.56, 0.96, 1.0];
 const TILE_BG: [f32; 4] = [0.12, 0.12, 0.15, 1.0];
 /// Workspaces with windows: their tile is this opaque.
 const ACTIVE_TILE_ALPHA: f32 = 0.5;
-const SLOT_BORDER: [f32; 4] = [0.22, 0.22, 0.26, 1.0];
 const RING: [f32; 4] = [0.36, 0.56, 0.96, 1.0];
 const RING_WIDTH: f64 = 3.0;
 const DRAG_ALPHA: f32 = 0.85;
@@ -89,7 +86,7 @@ pub struct OsdBuffers {
 #[derive(Default)]
 pub struct OverviewBuffers {
     tiles: HashMap<WsId, SolidColorBuffer>,
-    slots: HashMap<Coord, [SolidColorBuffer; 4]>,
+    slots: HashMap<Coord, SolidColorBuffer>,
     ring: [SolidColorBuffer; 4],
 }
 
@@ -340,14 +337,7 @@ impl XrossState {
         }
 
         if in_overview {
-            // What's behind the tiles, for the blur: wallpaper and other bottom layers.
-            let mut backdrop = Vec::new();
-            push_layers(renderer, &mut backdrop, Layer::Bottom, 1.0);
-            push_layers(renderer, &mut backdrop, Layer::Background, 1.0);
-            let output_size = output_geo.size.to_physical_precise_round(scale);
-            let tiles =
-                self.overview_backdrop(renderer, &views, p.clamp(0.0, 1.0) as f32, scale, output_size, &backdrop);
-            elements.extend(tiles);
+            elements.extend(self.overview_backdrop(&views, p.clamp(0.0, 1.0) as f32, scale));
         }
 
         if fullscreen_on_top {
@@ -395,48 +385,17 @@ impl XrossState {
         }
     }
 
-    /// Overview tile backgrounds, drop slots and the selection ring (front to back).
-    /// Workspaces with windows get a half-transparent tile; empty workspaces and slots
-    /// show the blurred backdrop (`backdrop` is what's behind the tiles: wallpaper etc.).
-    #[allow(clippy::too_many_arguments)]
+    /// Overview tile backgrounds and the selection ring (front to back). Workspaces and
+    /// drop slots (shown while dragging) all get the same half-transparent tile; the
+    /// overview only shows empty workspaces when you're on them.
     fn overview_backdrop(
         &self,
-        renderer: &mut GlesRenderer,
         views: &[crate::shell::overview::WsView],
         alpha: f32,
         scale: Scale<f64>,
-        output_size: Size<i32, Physical>,
-        backdrop: &[OutputRenderElement],
     ) -> Vec<OutputRenderElement> {
-        use smithay::backend::renderer::{
-            Renderer,
-            element::{Id, texture::TextureRenderElement},
-        };
         let now = self.start_time.elapsed();
         let slots = self.slot_views(now);
-        let has_windows = |id: WsId| self.space.elements().any(|w| workspace_of(w) == Some(id));
-        let empty: Vec<_> = views
-            .iter()
-            .filter(|v| v.id.is_some_and(|id| !has_windows(id)))
-            .chain(slots.iter())
-            .map(|v| v.rect)
-            .collect();
-
-        // The blurred backdrop, only if something shows it.
-        let blurred = (!empty.is_empty())
-            .then(|| {
-                let mut blur = self.blur.borrow_mut();
-                if blur.is_none() {
-                    match crate::blur::Blur::new(renderer) {
-                        Ok(b) => *blur = Some(b),
-                        Err(err) => tracing::warn!(?err, "blur shaders failed to compile"),
-                    }
-                }
-                let clear = crate::config::current().background();
-                blur.as_mut()?.render(renderer, backdrop, output_size, scale.x, clear).ok()
-            })
-            .flatten();
-
         let mut ui = self.overview_ui.borrow_mut();
         let ui = &mut *ui;
         let mut out = Vec::new();
@@ -450,39 +409,16 @@ impl XrossState {
             out.extend(outline(&mut ui.ring, ring, RING_WIDTH, RING, alpha, scale));
         }
 
-        // Empty workspaces and slots: the blurred backdrop, slots with a faint outline.
-        if let Some(texture) = &blurred {
-            let f = crate::blur::Blur::factor();
-            for rect in &empty {
-                let phys = rect.to_physical(scale);
-                let src =
-                    Rectangle::new((phys.loc.x / f, phys.loc.y / f).into(), (phys.size.w / f, phys.size.h / f).into());
-                out.push(OutputRenderElement::Backdrop(TextureRenderElement::from_static_texture(
-                    Id::new(),
-                    renderer.context_id(),
-                    phys.loc,
-                    texture.clone(),
-                    1,
-                    Transform::Normal,
-                    Some(alpha),
-                    Some(src),
-                    Some(rect.size.to_i32_round()),
-                    None,
-                    Kind::Unspecified,
-                )));
-            }
-        }
+        let tile_alpha = alpha * ACTIVE_TILE_ALPHA;
         for s in &slots {
-            let bufs = ui.slots.entry(s.coord).or_default();
-            out.extend(outline(bufs, s.rect, 1.0, SLOT_BORDER, alpha, scale));
+            let buf = ui.slots.entry(s.coord).or_default();
+            out.push(OutputRenderElement::Solid(solid(buf, s.rect, TILE_BG, tile_alpha, scale)));
         }
         ui.slots.retain(|c, _| slots.iter().any(|s| s.coord == *c));
-
-        // Workspaces with windows: a half-transparent tile.
         for v in views {
-            let Some(id) = v.id.filter(|id| has_windows(*id)) else { continue };
+            let Some(id) = v.id else { continue };
             let buf = ui.tiles.entry(id).or_default();
-            out.push(OutputRenderElement::Solid(solid(buf, v.rect, TILE_BG, alpha * ACTIVE_TILE_ALPHA, scale)));
+            out.push(OutputRenderElement::Solid(solid(buf, v.rect, TILE_BG, tile_alpha, scale)));
         }
         ui.tiles.retain(|id, _| views.iter().any(|v| v.id == Some(*id)));
         out

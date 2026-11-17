@@ -88,8 +88,6 @@ pub struct XrossState {
     pub closing: Vec<crate::shell::closing::ClosingWindow>,
     /// Custom shaders, compiled on first use.
     pub shaders: std::cell::RefCell<Option<crate::shaders::Shaders>>,
-    /// Overview blur programs and textures, made on first use.
-    pub blur: std::cell::RefCell<Option<crate::blur::Blur>>,
     /// Live capture sessions (dropping one stops it).
     pub capture_sessions: Vec<smithay::wayland::image_copy_capture::Session>,
     pub wlr_screencopy_state: crate::handlers::WlrScreencopyState,
@@ -240,7 +238,6 @@ impl XrossState {
             pending_captures: Vec::new(),
             closing: Vec::new(),
             shaders: Default::default(),
-            blur: Default::default(),
             capture_sessions: Vec::new(),
             wlr_screencopy_state: crate::handlers::WlrScreencopyState::new(&dh),
 

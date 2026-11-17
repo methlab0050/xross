@@ -279,8 +279,14 @@ impl XrossState {
         if self.overview_open() {
             self.overview_motion(pos);
         }
+        // Hovering a switcher tile selects it (releasing the modifier or clicking commits).
+        // Clients under the switcher don't see the pointer meanwhile.
+        let switcher = self.switcher_visible();
+        if switcher && let Some(i) = self.switcher_tile_at(pos) {
+            self.switcher_select(i);
+        }
         // pointer_hit finds nothing while the overview is up, so clients lose focus.
-        let under = self.pointer_hit(pos).and_then(|h| h.surface());
+        let under = if switcher { None } else { self.pointer_hit(pos).and_then(|h| h.surface()) };
         pointer.motion(self, under, &MotionEvent { location: pos, serial, time });
         pointer.frame(self);
     }

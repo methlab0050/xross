@@ -2,7 +2,6 @@
 
 mod anim;
 mod backend;
-mod blur;
 mod capture;
 mod config;
 mod cursor;

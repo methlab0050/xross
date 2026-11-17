@@ -45,6 +45,16 @@ pub fn init(state: &mut XrossState) -> Option<PathBuf> {
                         state.screenshot_request = Some(path.trim().into());
                         continue;
                     }
+                    // `pointer X Y`: move the pointer (global logical px), for scripted tests.
+                    if let Some(args) = msg.trim().strip_prefix("pointer ") {
+                        let xy: Vec<f64> = args.split_whitespace().filter_map(|v| v.parse().ok()).collect();
+                        if let [x, y] = xy[..] {
+                            state.on_pointer_motion((x, y).into(), smithay::backend::input::InputTime::now());
+                        } else {
+                            tracing::warn!(%msg, "usage: pointer X Y");
+                        }
+                        continue;
+                    }
                     match msg.trim().parse::<Action>() {
                         Ok(action) => state.run_action(action),
                         Err(err) => tracing::warn!(%err, "bad control message"),
@@ -71,8 +81,8 @@ pub fn init(state: &mut XrossState) -> Option<PathBuf> {
 /// Client side of `xross msg`.
 pub fn send(msg: &str) -> Result<(), String> {
     let mut msg = msg.to_string();
-    if msg.starts_with("spawn ") {
-        // Run by the compositor, with an activation token.
+    if msg.starts_with("spawn ") || msg.starts_with("pointer ") {
+        // Checked by the compositor (spawn runs there, with an activation token).
     } else if let Some(path) = msg.strip_prefix("screenshot ") {
         // The compositor may run elsewhere; give it an absolute path.
         let abs = std::path::absolute(path.trim()).map_err(|e| e.to_string())?;

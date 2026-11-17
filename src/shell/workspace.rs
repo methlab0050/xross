@@ -57,7 +57,7 @@ fn set_workspace(window: &Window, ws: WsId) {
     window.user_data().get::<WsTag>().unwrap().0.set(Some(ws));
 }
 
-fn has_windows(space: &Space<Window>, ws: WsId) -> bool {
+pub(crate) fn has_windows(space: &Space<Window>, ws: WsId) -> bool {
     space.elements().any(|w| workspace_of(w) == Some(ws))
 }
 

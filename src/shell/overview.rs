@@ -21,7 +21,7 @@ use smithay::{
 use super::{
     camera::WORKSPACE_GAP,
     has_ssd, ssd,
-    workspace::{WsId, workspace_of},
+    workspace::{WsId, has_windows, workspace_of},
 };
 use crate::{
     anim::{
@@ -201,12 +201,19 @@ impl XrossState {
         Rectangle::new((cx - size.w / 2.0, cy - size.h / 2.0).into(), size)
     }
 
-    /// Workspaces on screen this frame (output-local rects).
+    /// Whether the overview shows the workspace at `c`: ones with windows, plus the
+    /// current one (even if empty). Other empty workspaces are hidden.
+    pub fn overview_shows(&self, c: Coord) -> bool {
+        self.workspaces.get(c).is_some_and(|ws| c == self.workspaces.current() || has_windows(&self.space, ws.id))
+    }
+
+    /// Workspaces on screen this frame (output-local rects); see [`Self::overview_shows`].
     pub fn workspace_views(&self, now: Duration) -> Vec<WsView> {
         let f = self.frame(now);
         let screen = Rectangle::from_size(f.out_size);
         self.workspaces
             .iter()
+            .filter(|(c, _)| self.overview_shows(*c))
             .filter_map(|((x, y), ws)| {
                 let (sx, sy) = self.shift_of(ws.id, now);
                 let rect = Self::tile_rect(&f, (x as f64 + sx, y as f64 + sy));
@@ -215,10 +222,10 @@ impl XrossState {
             .collect()
     }
 
-    /// Empty drop-target slots (only while the overview is showing).
+    /// Empty drop-target slots: only while a window is being dragged in the overview.
     pub fn slot_views(&self, now: Duration) -> Vec<WsView> {
         let f = self.frame(now);
-        if f.p <= 0.0 {
+        if f.p <= 0.0 || !self.overview.press.as_ref().is_some_and(|p| p.dragging) {
             return Vec::new();
         }
         let space = &self.space;
@@ -317,7 +324,7 @@ impl XrossState {
         if let Some(dir) = dir {
             let to = neighbour(self.overview.selected, dir);
             let now = self.start_time.elapsed();
-            let selectable = self.workspaces.get(to).is_some() || self.slot_views(now).iter().any(|s| s.coord == to);
+            let selectable = self.overview_shows(to) || self.slot_views(now).iter().any(|s| s.coord == to);
             if selectable {
                 self.overview.selected = to;
                 self.set_center_target((to.0 as f64, to.1 as f64));
@@ -394,8 +401,9 @@ impl XrossState {
             return;
         }
 
-        let Some(press) = self.overview.press.take() else { return };
+        // Hit-test first: drop slots only exist while the press (a drag) is ongoing.
         let target = self.overview_hit(pos).map(|h| h.coord);
+        let Some(press) = self.overview.press.take() else { return };
         if press.dragging {
             if let (Some(window), Some(to)) = (press.window, target) {
                 self.drop_window(&window, to);
@@ -569,7 +577,7 @@ impl XrossState {
         let mut c = neighbour(cur, dir);
         // Skip over holes to the next workspace in that direction, if any.
         for _ in 0..8 {
-            if self.workspaces.get(c).is_some() {
+            if self.overview_shows(c) {
                 self.overview.selected = c;
                 self.set_center_target((c.0 as f64, c.1 as f64));
                 return;
@@ -580,7 +588,11 @@ impl XrossState {
 
     fn nearest_workspace(&self, at: (f64, f64)) -> Option<Coord> {
         let dist = |c: Coord| (c.0 as f64 - at.0).powi(2) + (c.1 as f64 - at.1).powi(2);
-        self.workspaces.iter().map(|(c, _)| c).min_by(|a, b| dist(*a).total_cmp(&dist(*b)))
+        self.workspaces
+            .iter()
+            .map(|(c, _)| c)
+            .filter(|c| self.overview_shows(*c))
+            .min_by(|a, b| dist(*a).total_cmp(&dist(*b)))
     }
 
     // --- 4-finger swipe ---
