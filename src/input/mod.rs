@@ -1,5 +1,6 @@
 pub mod binds;
 pub mod combo;
+pub mod launch;
 pub mod tap;
 pub mod user_binds;
 
@@ -105,8 +106,9 @@ impl XrossState {
             .env("XDG_ACTIVATION_TOKEN", &token)
             .env("DESKTOP_STARTUP_ID", &token)
             .spawn();
-        if let Err(err) = res {
-            tracing::warn!(%cmd, %err, "failed to spawn");
+        match res {
+            Ok(child) => self.children.push(child),
+            Err(err) => tracing::warn!(%cmd, %err, "failed to spawn"),
         }
     }
 
@@ -161,10 +163,12 @@ impl XrossState {
     }
 
     fn on_keyboard<I: InputBackend>(&mut self, event: I::KeyboardKeyEvent) {
+        self.on_key(event.key_code(), event.state(), Event::time(&event));
+    }
+
+    /// A key press or release, from a keyboard (or `xross msg key`, for scripted tests).
+    pub fn on_key(&mut self, keycode: smithay::input::keyboard::Keycode, key_state: KeyState, time: InputTime) {
         let serial = SERIAL_COUNTER.next_serial();
-        let time = Event::time(&event);
-        let keycode = event.key_code();
-        let key_state = event.state();
 
         let action = self.seat.get_keyboard().unwrap().input::<FilterAction, _>(
             self,
@@ -185,6 +189,11 @@ impl XrossState {
                         return FilterResult::Intercept(FilterAction::Bind(vt));
                     }
                     return FilterResult::Forward;
+                }
+                // Type-to-launch: hold every key back until the launcher has focus.
+                if state.launch_typing_active() {
+                    state.record_launch_key(keycode, key_state, handle.modified_sym().is_modifier_key());
+                    return FilterResult::Intercept(FilterAction::Noop);
                 }
                 // Releasing the modifiers of the bind that opened the switcher commits
                 // (after the filter, since committing changes keyboard focus). The
@@ -218,6 +227,18 @@ impl XrossState {
                 }
                 // The open overview takes every non-modifier key (VT switching still works).
                 if key_state == KeyState::Pressed && state.overview_open() && !is_modifier {
+                    // Typing text (no shortcut modifiers) opens the launcher with it.
+                    let m = binds::Mods::from(mods);
+                    if !m.ctrl
+                        && !m.alt
+                        && !m.logo
+                        && launch::types_text(handle.modified_sym())
+                        && state.launcher().is_some()
+                    {
+                        state.start_launch_typing(keycode);
+                        state.overview_close_pending = Some(Some(state.overview.selected));
+                        return FilterResult::Intercept(FilterAction::Noop);
+                    }
                     state.suppressed_keys.insert(keycode);
                     if let Some(vt) = binds::vt_switch(handle.modified_sym()) {
                         return FilterResult::Intercept(FilterAction::Bind(vt));

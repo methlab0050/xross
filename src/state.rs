@@ -151,6 +151,14 @@ pub struct XrossState {
     pub mod_tap: crate::input::tap::ModTap,
     /// A tap bind to run after the keyboard filter.
     pub pending_tap: Option<crate::input::user_binds::BoundAction>,
+    /// Keys typed in the overview, held back for the launcher it started.
+    pub launch_typing: Option<crate::input::launch::LaunchTyping>,
+    pub launch_seq: u64,
+    /// The launcher, started hidden while the overview is up.
+    pub prewarm: Option<crate::input::launch::Prewarm>,
+    pub prewarm_attempted: bool,
+    /// Processes we started, reaped once they exit.
+    pub children: Vec<std::process::Child>,
     /// Modifiers of the bind that opened the switcher; releasing them commits.
     pub switcher_hold: Option<crate::input::binds::Mods>,
     /// Overview actions deferred until after keyboard/pointer handling (they move focus).
@@ -280,6 +288,11 @@ impl XrossState {
             overview_ui: Default::default(),
             mod_tap: Default::default(),
             pending_tap: None,
+            launch_typing: None,
+            launch_seq: 0,
+            prewarm: None,
+            prewarm_attempted: false,
+            children: Vec::new(),
             switcher_hold: None,
             overview_toggle_pending: false,
             overview_close_pending: None,

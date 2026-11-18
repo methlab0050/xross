@@ -259,6 +259,7 @@ impl XrossState {
             _ => None,
         });
 
+        let hidden_launcher = self.hidden_launcher().cloned();
         let layers = layer_map_for_output(output);
         let push_layers =
             |renderer: &mut GlesRenderer, elements: &mut Vec<OutputRenderElement>, kind: Layer, alpha: f32| {
@@ -267,6 +268,9 @@ impl XrossState {
                 }
                 // layers_on() is bottom-to-top within a layer; we need front-to-back.
                 for layer in layers.layers_on(kind).rev() {
+                    if hidden_launcher.as_ref() == Some(layer) {
+                        continue;
+                    }
                     let Some(geo) = layers.layer_geometry(layer) else {
                         continue;
                     };

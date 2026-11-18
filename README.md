@@ -17,7 +17,9 @@ thumbnails, and spring animations that follow your fingers on a touchpad.
   slide back next to the rest, so none are ever unreachable.
 - **Overview:** shows every workspace with windows. Click or press Enter to go to one,
   use the arrow keys or scroll to move around, and drag windows between workspaces or
-  onto a new empty slot.
+  onto a new empty slot. Start typing to search with your launcher
+  (`overview.launcher`, e.g. fuzzel): it's started in the background when the overview
+  opens, so it appears instantly with what you typed.
 - **Alt-tab:** a quick tap flips between the last two windows. Hold to see tiles, then
   pick with Tab/Shift+Tab, the arrow keys or the mouse; release the modifier to switch.
 - **Touchpad gestures:** 3-finger swipe switches workspaces, 4-finger swipe up/down

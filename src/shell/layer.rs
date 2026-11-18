@@ -100,6 +100,10 @@ impl XrossState {
         }
 
         tracing::trace!(namespace = layer.namespace(), layer = ?layer.layer(), "layer surface committed");
+        // The launcher started with the overview stays hidden (and unfocused) until typing.
+        if self.claim_launcher_layer(&layer) {
+            return true;
+        }
         let wants_focus = layer.cached_state().keyboard_interactivity == KeyboardInteractivity::Exclusive
             && matches!(layer.layer(), Layer::Top | Layer::Overlay);
         if wants_focus && !self.is_locked() && !self.keyboard_focus_is_layer(&layer) {

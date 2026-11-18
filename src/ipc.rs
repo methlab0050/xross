@@ -5,6 +5,7 @@
 //! One datagram per command on `$XDG_RUNTIME_DIR/xross-<wayland socket>.sock`; children
 //! of xross find it through `$XROSS_SOCKET`.
 
+use smithay::backend::input::KeyState;
 use std::{
     io::ErrorKind,
     os::unix::net::UnixDatagram,
@@ -55,6 +56,28 @@ pub fn init(state: &mut XrossState) -> Option<PathBuf> {
                         }
                         continue;
                     }
+                    // `key CODE` (press and release), `key-down CODE`, `key-up CODE`: Linux
+                    // key codes (KEY_A = 30), through the normal keyboard path, for tests.
+                    if let Some((verb, code)) = msg.trim().split_once(' ')
+                        && let Some(states) = match verb {
+                            "key" => Some(&[KeyState::Pressed, KeyState::Released][..]),
+                            "key-down" => Some(&[KeyState::Pressed][..]),
+                            "key-up" => Some(&[KeyState::Released][..]),
+                            _ => None,
+                        }
+                    {
+                        match code.trim().parse::<u32>() {
+                            Ok(code) => {
+                                for s in states {
+                                    let keycode = smithay::input::keyboard::Keycode::new(code + 8);
+                                    state.on_key(keycode, *s, smithay::backend::input::InputTime::now());
+                                    state.run_overview_pending();
+                                }
+                            }
+                            Err(_) => tracing::warn!(%msg, "usage: key|key-down|key-up CODE"),
+                        }
+                        continue;
+                    }
                     match msg.trim().parse::<Action>() {
                         Ok(action) => state.run_action(action),
                         Err(err) => tracing::warn!(%err, "bad control message"),
@@ -81,7 +104,7 @@ pub fn init(state: &mut XrossState) -> Option<PathBuf> {
 /// Client side of `xross msg`.
 pub fn send(msg: &str) -> Result<(), String> {
     let mut msg = msg.to_string();
-    if msg.starts_with("spawn ") || msg.starts_with("pointer ") {
+    if ["spawn ", "pointer ", "key ", "key-down ", "key-up "].iter().any(|p| msg.starts_with(p)) {
         // Checked by the compositor (spawn runs there, with an activation token).
     } else if let Some(path) = msg.strip_prefix("screenshot ") {
         // The compositor may run elsewhere; give it an absolute path.

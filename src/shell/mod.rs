@@ -184,6 +184,9 @@ impl XrossState {
         let layer_hit = |layer_kind: Layer| {
             let rel = pos - output_loc.to_f64();
             let layer = layers.layer_under(layer_kind, rel)?;
+            if self.hidden_launcher() == Some(layer) {
+                return None;
+            }
             let layer_loc = layers.layer_geometry(layer)?.loc + output_loc;
             layer.surface_under(pos - layer_loc.to_f64(), WindowSurfaceType::ALL).map(|(surface, loc)| {
                 PointerHit::Surface {

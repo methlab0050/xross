@@ -2726,6 +2726,7 @@ version = "0.1.0"
 dependencies = [
  "ab_glyph",
  "bitflags 2.13.2",
+ "libc",
  "png",
  "resvg",
  "serde",

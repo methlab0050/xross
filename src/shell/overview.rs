@@ -295,6 +295,7 @@ impl XrossState {
 
     /// Per-frame: retire finished animations.
     pub fn tick_overview(&mut self) {
+        self.tick_prewarm();
         let now = self.start_time.elapsed();
         let ov = &mut self.overview;
         if ov.progress.is_some_and(|a| a.is_done(now)) {
@@ -672,6 +673,7 @@ impl XrossState {
     /// inside the keyboard filter or mid-button-handling).
     pub fn run_overview_pending(&mut self) {
         if self.is_locked() {
+            self.launch_typing = None;
             self.overview_toggle_pending = false;
             self.overview_close_pending = None;
             self.overview_focus_pending = None;
@@ -691,5 +693,7 @@ impl XrossState {
                 self.focus_window(Some(&w), SERIAL_COUNTER.next_serial());
             }
         }
+        // Type-to-launch: the overview has closed; start the launcher.
+        self.arm_launch_typing();
     }
 }

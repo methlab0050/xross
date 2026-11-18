@@ -48,6 +48,7 @@ impl SeatHandler for XrossState {
         let client = focused.and_then(WaylandFocus::wl_surface).and_then(|s| dh.get_client(s.id()).ok());
         set_data_device_focus(dh, seat, client.clone());
         set_primary_focus(dh, seat, client);
+        self.launch_focus_changed(focused);
     }
 }
 

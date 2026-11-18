@@ -202,11 +202,14 @@ impl Animations {
 pub struct Overview {
     /// Workspace size in the overview, relative to the screen.
     pub scale: f64,
+    /// Typing in the overview closes it and starts this (through `sh -c`), passing on
+    /// what was typed. Unset: typing does nothing.
+    pub launcher: Option<String>,
 }
 
 impl Default for Overview {
     fn default() -> Self {
-        Self { scale: 0.25 }
+        Self { scale: 0.25, launcher: None }
     }
 }
 
@@ -434,17 +437,17 @@ impl crate::state::XrossState {
         self.pending_startup_commands.extend(config.startup.commands.iter().cloned());
         self.apply_config(config);
 
-        if self.config_path.is_some() {
-            let res = self.loop_handle.insert_source(
-                smithay::reexports::calloop::timer::Timer::from_duration(WATCH_INTERVAL),
-                |_, _, state| {
-                    state.check_config();
-                    smithay::reexports::calloop::timer::TimeoutAction::ToDuration(WATCH_INTERVAL)
-                },
-            );
-            if let Err(err) = res {
-                tracing::warn!(%err, "can't watch the config file");
-            }
+        // Housekeeping every second: reap exited children, re-read a changed config.
+        let res = self.loop_handle.insert_source(
+            smithay::reexports::calloop::timer::Timer::from_duration(WATCH_INTERVAL),
+            |_, _, state| {
+                state.reap_children();
+                state.check_config();
+                smithay::reexports::calloop::timer::TimeoutAction::ToDuration(WATCH_INTERVAL)
+            },
+        );
+        if let Err(err) = res {
+            tracing::warn!(%err, "can't start the housekeeping timer");
         }
     }
 

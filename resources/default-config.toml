@@ -51,6 +51,12 @@ pan = { stiffness = 600.0, damping = 1.0 }        # panning inside the overview
 [overview]
 # Workspace size in the overview, relative to the screen.
 scale = 0.25
+# Start typing in the overview to search: it closes, this launcher (run through
+# `sh -c`) appears, and what you typed is passed on to it. Any launcher that takes the
+# keyboard when it opens works. Layer-shell launchers (fuzzel, sherlock, wofi, ...)
+# are started hidden as soon as the overview opens, so they show up instantly; if
+# nothing is typed, they're closed again. Unset: typing does nothing.
+# launcher = "fuzzel"
 
 [touchpad]
 tap = true
