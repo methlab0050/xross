@@ -1,44 +1,44 @@
-//! Modifier-only taps (Shift+Alt in dev, Super in prod, toggle the overview), the way
-//! GNOME treats a lone Super press: it fires when the modifiers are released, but only
-//! if exactly the target combination was held and nothing else happened meanwhile
-//! (no other key, no extra modifier, no click or scroll).
+//! Modifier-only taps (e.g. `"Super" = "overview"` in the config), the way GNOME
+//! treats a lone Super press: it fires when every modifier is released, for the
+//! combination that was held, but only if nothing else happened meanwhile (no other
+//! key, click, scroll or gesture).
 
 use super::binds::Mods;
 
 #[derive(Debug, Default)]
 pub struct ModTap {
-    armed: bool,
+    /// Every modifier held since the last full release.
+    peak: Mods,
     spoiled: bool,
-}
-
-fn subset(a: Mods, b: Mods) -> bool {
-    (!a.ctrl || b.ctrl) && (!a.alt || b.alt) && (!a.shift || b.shift) && (!a.logo || b.logo)
 }
 
 impl ModTap {
     /// A key press. `mods` is the modifier state after it.
-    pub fn press(&mut self, is_modifier_key: bool, mods: Mods, target: Mods) {
-        if !is_modifier_key || !subset(mods, target) {
+    pub fn press(&mut self, is_modifier_key: bool, mods: Mods) {
+        if !is_modifier_key {
             self.spoil();
-        } else if mods == target && !self.spoiled {
-            self.armed = true;
+            return;
         }
+        self.peak.ctrl |= mods.ctrl;
+        self.peak.alt |= mods.alt;
+        self.peak.shift |= mods.shift;
+        self.peak.logo |= mods.logo;
     }
 
     /// Anything else happened while modifiers were held (a click, a scroll, a gesture).
     pub fn spoil(&mut self) {
-        self.armed = false;
         self.spoiled = true;
     }
 
-    /// A key release. Returns true if this completes a tap.
-    pub fn release(&mut self, mods: Mods) -> bool {
-        if mods != Mods::default() {
-            return false;
+    /// A key release (`mods` is the state after it). Once everything is released,
+    /// returns the combination that was tapped, if it was a clean tap.
+    pub fn release(&mut self, mods: Mods) -> Option<Mods> {
+        if !mods.is_empty() {
+            return None;
         }
-        let fire = self.armed && !self.spoiled;
+        let tapped = (!self.spoiled && !self.peak.is_empty()).then_some(self.peak);
         *self = Self::default();
-        fire
+        tapped
     }
 }
 
@@ -50,54 +50,46 @@ mod tests {
     const SHIFT: Mods = Mods { shift: true, ..NONE };
     const ALT: Mods = Mods { alt: true, ..NONE };
     const SHIFT_ALT: Mods = Mods { shift: true, alt: true, ..NONE };
-    const CTRL_SHIFT_ALT: Mods = Mods { ctrl: true, shift: true, alt: true, ..NONE };
+    const LOGO: Mods = Mods { logo: true, ..NONE };
 
     #[test]
-    fn shift_alt_tap_fires_on_full_release() {
+    fn combination_fires_on_full_release() {
         let mut t = ModTap::default();
-        t.press(true, SHIFT, SHIFT_ALT);
-        t.press(true, SHIFT_ALT, SHIFT_ALT);
-        assert!(!t.release(SHIFT), "still holding shift");
-        assert!(t.release(NONE));
+        t.press(true, SHIFT);
+        t.press(true, SHIFT_ALT);
+        assert_eq!(t.release(SHIFT), None, "still holding shift");
+        assert_eq!(t.release(NONE), Some(SHIFT_ALT));
+    }
+
+    #[test]
+    fn single_modifier() {
+        let mut t = ModTap::default();
+        t.press(true, LOGO);
+        assert_eq!(t.release(NONE), Some(LOGO));
     }
 
     #[test]
     fn another_key_spoils_it() {
         let mut t = ModTap::default();
-        t.press(true, SHIFT_ALT, SHIFT_ALT);
-        t.press(false, SHIFT_ALT, SHIFT_ALT); // Shift+Alt+Right: a workspace switch
-        assert!(!t.release(NONE));
-    }
-
-    #[test]
-    fn an_extra_modifier_spoils_it() {
-        let mut t = ModTap::default();
-        t.press(true, SHIFT_ALT, SHIFT_ALT);
-        t.press(true, CTRL_SHIFT_ALT, SHIFT_ALT);
-        assert!(!t.release(NONE));
+        t.press(true, SHIFT_ALT);
+        t.press(false, SHIFT_ALT); // Shift+Alt+Right: a workspace switch
+        assert_eq!(t.release(NONE), None);
     }
 
     #[test]
     fn a_click_spoils_it() {
         let mut t = ModTap::default();
-        t.press(true, SHIFT_ALT, SHIFT_ALT);
+        t.press(true, ALT);
         t.spoil();
-        assert!(!t.release(NONE));
-    }
-
-    #[test]
-    fn partial_combination_does_nothing() {
-        let mut t = ModTap::default();
-        t.press(true, ALT, SHIFT_ALT);
-        assert!(!t.release(NONE));
+        assert_eq!(t.release(NONE), None);
     }
 
     #[test]
     fn resets_after_release() {
         let mut t = ModTap::default();
-        t.press(false, NONE, SHIFT_ALT); // typing
-        t.release(NONE);
-        t.press(true, SHIFT_ALT, SHIFT_ALT);
-        assert!(t.release(NONE));
+        t.press(false, NONE); // typing
+        assert_eq!(t.release(NONE), None);
+        t.press(true, SHIFT_ALT);
+        assert_eq!(t.release(NONE), Some(SHIFT_ALT));
     }
 }

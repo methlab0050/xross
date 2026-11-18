@@ -1,7 +1,9 @@
 //! The config file: `$XDG_CONFIG_HOME/xross/config.toml` (or `--config PATH`).
 //!
-//! Every setting is optional; see `resources/config.example.toml` for all of them with
-//! their defaults. The file is re-read when it changes. Tuning values (springs, gaps,
+//! Every setting is optional: the file only needs what differs from the defaults in
+//! `resources/default-config.toml` (built in, and copied read-only to
+//! `$XDG_STATE_HOME/xross/default-config.toml` for reference). Binds merge one combo at a
+//! time: the defaults' `[binds.dev]`/`[binds.prod]` entries, then the user's. The file is re-read when it changes. Tuning values (springs, gaps,
 //! sensitivity, colours) apply immediately; binds and touchpad settings are recompiled
 //! and reapplied; startup commands only run at startup.
 //!
@@ -33,15 +35,45 @@ pub struct Config {
     pub overview: Overview,
     pub touchpad: Touchpad,
     pub appearance: Appearance,
-    /// Extra keybinds, `"Mod+Return" = "spawn foot"`. They take precedence over the
-    /// built-in ones; `"none"` disables a built-in bind.
-    pub binds: BTreeMap<String, String>,
+    /// Keybinds per profile, `"Super+Left" = "snap left"` (see `input::user_binds`).
+    /// After [`load`], these are the defaults' entries followed by the user's.
+    pub binds: Binds,
+}
+
+/// `[binds.dev]` and `[binds.prod]`: (combo, action) entries, in the order they apply.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Binds {
+    #[serde(deserialize_with = "bind_entries")]
+    pub dev: Vec<(String, String)>,
+    #[serde(deserialize_with = "bind_entries")]
+    pub prod: Vec<(String, String)>,
+}
+
+fn bind_entries<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<(String, String)>, D::Error> {
+    Ok(BTreeMap::<String, String>::deserialize(d)?.into_iter().collect())
+}
+
+impl Binds {
+    pub fn for_profile(&self, profile: crate::input::binds::Profile) -> &[(String, String)] {
+        match profile {
+            crate::input::binds::Profile::Dev => &self.dev,
+            crate::input::binds::Profile::Prod => &self.prod,
+        }
+    }
+
+    /// `self`'s entries, then `user`'s (which win for the same combo).
+    fn then(mut self, user: Binds) -> Binds {
+        self.dev.extend(user.dev);
+        self.prod.extend(user.prod);
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct General {
-    /// What Ctrl+` (and `spawn-terminal`) runs, through `sh -c`.
+    /// What `spawn-terminal` runs, through `sh -c`.
     pub terminal: String,
     /// "dev" (Alt-based) or "prod" (Super-based). Unset: dev nested, prod on a TTY.
     /// `--binds` on the command line wins.
@@ -298,13 +330,57 @@ pub fn default_path() -> Option<PathBuf> {
     Some(base.join("xross").join("config.toml"))
 }
 
-/// Read and parse a config file. A missing file is the default config.
+/// xross's defaults, every option documented.
+pub const DEFAULT_CONFIG: &str = include_str!("../resources/default-config.toml");
+
+impl Config {
+    /// The defaults with `user` (a config file's text) on top.
+    pub fn layered(user: &str) -> Result<Config, String> {
+        let defaults: Config = toml::from_str(DEFAULT_CONFIG).map_err(|e| format!("built-in defaults: {e}"))?;
+        // Unset keys take their Rust defaults, which match the default config (tested).
+        let mut config: Config = toml::from_str(user).map_err(|e| e.to_string())?;
+        config.binds = defaults.binds.then(std::mem::take(&mut config.binds));
+        Ok(config)
+    }
+
+    /// Just the defaults.
+    pub fn builtin() -> Config {
+        Config::layered("").expect("the built-in default config parses")
+    }
+}
+
+/// Read a config file over the defaults. A missing file is just the defaults.
 pub fn load(path: &Path) -> Result<Config, String> {
     match std::fs::read_to_string(path) {
-        Ok(text) => toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display())),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
+        Ok(text) => Config::layered(&text).map_err(|e| format!("{}: {e}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::builtin()),
         Err(e) => Err(format!("{}: {e}", path.display())),
     }
+}
+
+/// Where the read-only copy of the defaults goes: `$XDG_STATE_HOME/xross/default-config.toml`.
+pub fn default_copy_path() -> Option<PathBuf> {
+    let state = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))?;
+    Some(state.join("xross").join("default-config.toml"))
+}
+
+/// Write the read-only reference copy of the defaults, if it's missing or outdated.
+pub fn write_default_copy(path: &Path) -> std::io::Result<bool> {
+    use std::os::unix::fs::PermissionsExt;
+    if std::fs::read_to_string(path).is_ok_and(|t| t == DEFAULT_CONFIG) {
+        return Ok(false);
+    }
+    let dir = path.parent().ok_or(std::io::ErrorKind::InvalidInput)?;
+    std::fs::create_dir_all(dir)?;
+    // Write beside it and rename over it: replaces the old read-only copy in one step.
+    let tmp = dir.join(".default-config.toml.tmp");
+    let _ = std::fs::remove_file(&tmp);
+    std::fs::write(&tmp, DEFAULT_CONFIG)?;
+    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o444))?;
+    std::fs::rename(&tmp, path)?;
+    Ok(true)
 }
 
 thread_local! {
@@ -335,13 +411,20 @@ impl crate::state::XrossState {
     /// Load the config at startup (falling back to defaults on errors) and start
     /// watching it for changes.
     pub fn init_config(&mut self, path: Option<PathBuf>) {
+        if let Some(copy) = default_copy_path() {
+            match write_default_copy(&copy) {
+                Ok(true) => tracing::info!(path = %copy.display(), "wrote the default config"),
+                Ok(false) => {}
+                Err(err) => tracing::warn!(%err, path = %copy.display(), "can't write the default config"),
+            }
+        }
         let config = match path.as_deref().map(load) {
             Some(Ok(c)) => c,
             Some(Err(err)) => {
                 tracing::warn!(%err, "config error; using defaults");
-                Config::default()
+                Config::builtin()
             }
-            None => Config::default(),
+            None => Config::builtin(),
         };
         if let Some(p) = &path {
             tracing::info!(path = %p.display(), exists = p.exists(), "config");
@@ -440,7 +523,7 @@ impl crate::state::XrossState {
         }
         self.bind_profile = profile;
 
-        let (binds, errors) = crate::input::user_binds::compile(&config.binds, profile);
+        let (binds, errors) = crate::input::user_binds::compile(config.binds.for_profile(profile), profile);
         for err in errors {
             tracing::warn!("config: {err}");
         }
@@ -462,20 +545,74 @@ impl crate::state::XrossState {
 mod tests {
     use super::*;
 
-    const EXAMPLE: &str = include_str!("../resources/config.example.toml");
+    use crate::input::{
+        binds::{Action, Mods, Profile},
+        user_binds::{BoundAction, compile, lookup_tap},
+    };
 
     #[test]
     fn empty_file_is_the_default() {
         assert_eq!(toml::from_str::<Config>("").unwrap(), Config::default());
+        assert_eq!(Config::layered("").unwrap(), Config::builtin());
     }
 
     #[test]
-    fn example_documents_the_defaults() {
-        // Every value in the example is the default; only the binds are illustrative.
-        let mut example: Config = toml::from_str(EXAMPLE).unwrap();
-        assert!(!example.binds.is_empty(), "the example shows some binds");
-        example.binds.clear();
-        assert_eq!(example, Config::default());
+    fn default_config_matches_the_code_defaults() {
+        // Every value in the default config is the code's default, so a user file only
+        // needs what it changes.
+        let mut defaults: Config = toml::from_str(DEFAULT_CONFIG).unwrap();
+        defaults.binds = Binds::default();
+        assert_eq!(defaults, Config::default());
+    }
+
+    #[test]
+    fn default_binds_compile_cleanly() {
+        let c = Config::builtin();
+        for profile in [Profile::Dev, Profile::Prod] {
+            let (binds, errors) = compile(c.binds.for_profile(profile), profile);
+            assert!(errors.is_empty(), "{profile:?}: {errors:?}");
+            assert_eq!(binds.len(), c.binds.for_profile(profile).len(), "{profile:?}: no combo listed twice");
+            assert!(binds.len() >= 15, "{profile:?}: every bind is listed");
+        }
+        let (prod, _) = compile(&c.binds.prod, Profile::Prod);
+        let logo = Mods { logo: true, ..Default::default() };
+        assert_eq!(lookup_tap(&prod, logo), Some(&BoundAction::Builtin(Action::Overview)), "tap Super");
+        let (dev, _) = compile(&c.binds.dev, Profile::Dev);
+        let shift_alt = Mods { shift: true, alt: true, ..Default::default() };
+        assert_eq!(lookup_tap(&dev, shift_alt), Some(&BoundAction::Builtin(Action::Overview)), "tap Shift+Alt");
+    }
+
+    #[test]
+    fn user_binds_layer_over_the_defaults() {
+        let c = Config::layered("[binds.prod]\n\"Super+q\" = \"close\"\n\"Super\" = \"none\"\n").unwrap();
+        let (prod, errors) = compile(&c.binds.prod, Profile::Prod);
+        assert!(errors.is_empty());
+        let logo = Mods { logo: true, ..Default::default() };
+        assert!(lookup_tap(&prod, logo).is_none(), "tap removed");
+        assert_eq!(prod.len(), Config::builtin().binds.prod.len(), "one added, one removed; the rest stay");
+        assert_eq!(c.binds.dev, Config::builtin().binds.dev, "dev untouched");
+    }
+
+    #[test]
+    fn old_flat_binds_table_is_an_error() {
+        assert!(Config::layered("[binds]\n\"Mod+q\" = \"close\"\n").is_err());
+    }
+
+    #[test]
+    fn default_copy_is_written_read_only_and_refreshed() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("xross-test-{}", std::process::id()));
+        let path = dir.join("xross/default-config.toml");
+        assert!(write_default_copy(&path).unwrap(), "written when missing");
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o444);
+        assert!(!write_default_copy(&path).unwrap(), "left alone when current");
+        // An outdated copy (even read-only) is replaced.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::write(&path, "old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        assert!(write_default_copy(&path).unwrap());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), DEFAULT_CONFIG);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

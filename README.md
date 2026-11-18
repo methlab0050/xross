@@ -32,6 +32,9 @@ thumbnails, and spring animations that follow your fingers on a touchpad.
 
 ## Keybinds
 
+Every keybind is listed in the default config (see [Configuration](#configuration)),
+under `[binds.prod]` and `[binds.dev]`. The defaults are below.
+
 There are two profiles. **prod** (Super-based) is the default on real hardware. **dev**
 (Alt-based) is the default when running nested inside another desktop, which usually
 grabs Super.
@@ -47,14 +50,33 @@ grabs Super.
 | Terminal | Ctrl+` | Ctrl+` |
 | Quit | Ctrl+Alt+Backspace | Ctrl+Alt+Backspace |
 
-`--binds dev|prod` or the config file picks a profile, and the config file can add
-binds of its own.
+`--binds dev|prod` or `general.binds` in the config picks the profile. Mouse
+move/resize uses the profile's modifier. Ctrl+Alt+F1..F12 (switching VTs) is always
+built in.
+
+To change binds, add entries to your config's table for the profile. The same combo
+replaces the default, `"none"` removes a default (the keys then go to apps), and
+modifiers alone make a tap:
+
+```toml
+[binds.prod]
+"Super+q" = "close"
+"Super+Return" = "spawn foot"
+"Super+d" = "spawn fuzzel"
+"Ctrl+Super+Left" = "none"
+"Super" = "overview"
+```
 
 ## Configuration
 
-The config lives at `~/.config/xross/config.toml` (or under `$XDG_CONFIG_HOME`) and
-reloads when you save it. [`resources/config.example.toml`](resources/config.example.toml)
-documents every option with its default. The options cover output scale, XWayland
+Your config lives at `~/.config/xross/config.toml` (or under `$XDG_CONFIG_HOME`) and
+reloads when you save it. It only needs the settings you want to change; everything
+else keeps its default.
+
+Every option is in the default config, with its default value and what it does. The
+file is built into xross ([`resources/default-config.toml`](resources/default-config.toml)),
+and xross keeps a read-only copy at `~/.local/state/xross/default-config.toml`,
+rewritten whenever the defaults change. The options cover output scale, XWayland
 scaling, gaps, animations, the overview, touchpad, appearance (corner radius, shadows,
 font, icon theme), startup commands, the terminal command and keybinds.
 

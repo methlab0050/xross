@@ -116,6 +116,7 @@ impl XrossState {
     /// Focus the selected window and end the session.
     pub fn switcher_commit(&mut self) {
         let Some(session) = self.switcher.take() else { return };
+        self.switcher_hold = None;
         let window = session.selected().clone();
         tracing::debug!(title = window_title(&window), "switcher commit");
         if window.alive() {
@@ -126,6 +127,7 @@ impl XrossState {
 
     pub fn switcher_cancel(&mut self) {
         self.switcher = None;
+        self.switcher_hold = None;
         self.switcher_ui.borrow_mut().titles.clear();
     }
 

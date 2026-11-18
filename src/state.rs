@@ -149,6 +149,10 @@ pub struct XrossState {
     pub overview_ui: std::cell::RefCell<crate::render::OverviewBuffers>,
     /// Detects the workspace modifier tapped alone (toggles the overview).
     pub mod_tap: crate::input::tap::ModTap,
+    /// A tap bind to run after the keyboard filter.
+    pub pending_tap: Option<crate::input::user_binds::BoundAction>,
+    /// Modifiers of the bind that opened the switcher; releasing them commits.
+    pub switcher_hold: Option<crate::input::binds::Mods>,
     /// Overview actions deferred until after keyboard/pointer handling (they move focus).
     pub overview_toggle_pending: bool,
     pub overview_close_pending: Option<Option<crate::layout::grid::Coord>>,
@@ -275,6 +279,8 @@ impl XrossState {
             overview: Default::default(),
             overview_ui: Default::default(),
             mod_tap: Default::default(),
+            pending_tap: None,
+            switcher_hold: None,
             overview_toggle_pending: false,
             overview_close_pending: None,
             overview_focus_pending: None,

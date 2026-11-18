@@ -186,9 +186,15 @@ impl XrossState {
                     }
                     return FilterResult::Forward;
                 }
-                // Releasing the switcher's modifier commits (after the filter, since
-                // committing changes keyboard focus). The release itself goes through.
-                if state.switcher_active() && !state.bind_profile.drag_mod_held(mods) {
+                // Releasing the modifiers of the bind that opened the switcher commits
+                // (after the filter, since committing changes keyboard focus). The
+                // release itself goes through.
+                let holding = match state.switcher_hold {
+                    Some(hold) => hold.held_in(mods.into()),
+                    // Opened by `xross msg`: the profile's modifier.
+                    None => state.bind_profile.drag_mod_held(mods),
+                };
+                if state.switcher_active() && !holding {
                     state.switcher_commit_pending = true;
                 }
                 if key_state == KeyState::Pressed
@@ -199,15 +205,14 @@ impl XrossState {
                     return FilterResult::Intercept(FilterAction::Noop);
                 }
 
-                // The overview modifier(s) tapped alone toggle the overview.
+                // Modifiers tapped alone: their bind (e.g. "Super" = "overview") runs
+                // after the filter.
                 let is_modifier = handle.modified_sym().is_modifier_key();
                 match key_state {
-                    KeyState::Pressed => {
-                        state.mod_tap.press(is_modifier, mods.into(), state.bind_profile.overview_tap())
-                    }
+                    KeyState::Pressed => state.mod_tap.press(is_modifier, mods.into()),
                     KeyState::Released => {
-                        if state.mod_tap.release(mods.into()) {
-                            state.overview_toggle_pending = true;
+                        if let Some(tapped) = state.mod_tap.release(mods.into()) {
+                            state.pending_tap = user_binds::lookup_tap(&state.user_binds, tapped).cloned();
                         }
                     }
                 }
@@ -230,22 +235,26 @@ impl XrossState {
                 }
                 // Match on the unshifted keysym so Shift+Tab is "Tab with Shift held".
                 let sym = handle.raw_latin_sym_or_raw_current_sym().unwrap_or_else(|| handle.modified_sym());
-                if let Some(bound) = user_binds::lookup(&state.user_binds, mods.into(), sym) {
+                if let Some(vt) = binds::vt_switch(handle.modified_sym()) {
                     state.suppressed_keys.insert(keycode);
-                    return FilterResult::Intercept(match bound {
-                        user_binds::BoundAction::Builtin(a) => FilterAction::Bind(*a),
-                        user_binds::BoundAction::Spawn(cmd) => FilterAction::Spawn(cmd.clone()),
-                        user_binds::BoundAction::Disabled => FilterAction::Noop,
-                    });
+                    return FilterResult::Intercept(FilterAction::Bind(vt));
                 }
-                let action = binds::vt_switch(handle.modified_sym())
-                    .or_else(|| binds::lookup(state.bind_profile, mods.into(), sym));
-                match action {
-                    Some(a) => {
-                        state.suppressed_keys.insert(keycode);
-                        FilterResult::Intercept(FilterAction::Bind(a))
+                let Some(bind) = user_binds::lookup(&state.user_binds, mods.into(), sym) else {
+                    return FilterResult::Forward;
+                };
+                state.suppressed_keys.insert(keycode);
+                match &bind.action {
+                    user_binds::BoundAction::Builtin(a) => {
+                        // The switcher stays up while this bind's modifiers (less Shift,
+                        // which steps backwards) are held.
+                        if matches!(a, binds::Action::SwitcherNext | binds::Action::SwitcherPrev)
+                            && !state.switcher_active()
+                        {
+                            state.switcher_hold = Some(binds::Mods { shift: false, ..bind.mods });
+                        }
+                        FilterResult::Intercept(FilterAction::Bind(*a))
                     }
-                    None => FilterResult::Forward,
+                    user_binds::BoundAction::Spawn(cmd) => FilterResult::Intercept(FilterAction::Spawn(cmd.clone())),
                 }
             },
         );
@@ -253,6 +262,11 @@ impl XrossState {
             Some(FilterAction::Bind(a)) => self.run_action(a),
             Some(FilterAction::Spawn(cmd)) => self.spawn(&cmd),
             _ => {}
+        }
+        match self.pending_tap.take() {
+            Some(user_binds::BoundAction::Builtin(a)) => self.run_action(a),
+            Some(user_binds::BoundAction::Spawn(cmd)) => self.spawn(&cmd),
+            None => {}
         }
         if std::mem::take(&mut self.switcher_commit_pending) {
             self.switcher_commit();

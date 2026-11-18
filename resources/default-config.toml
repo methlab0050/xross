@@ -1,0 +1,133 @@
+# xross's default config.
+#
+# xross writes this copy for reference and keeps it up to date; it's read-only, and
+# editing it changes nothing. To change something, put just that in
+# ~/.config/xross/config.toml (or pass --config PATH): everything you leave out keeps
+# the value shown here. That file is re-read whenever it changes; mistakes are logged
+# (to ~/.local/state/xross/xross.log and stdout) and the previous config stays in effect.
+
+[general]
+# What spawn-terminal runs (through `sh -c`).
+terminal = "foot"
+# "dev" (Alt / Shift+Alt) or "prod" (Super / Ctrl+Super). Leave unset for dev when
+# nested and prod on a TTY. `--binds` on the command line wins.
+# binds = "prod"
+
+[startup]
+# Run once after Xwayland is up, through `sh -c`.
+commands = []
+# commands = ["swaybg -i ~/Pictures/wall.png -m fill", "waybar"]
+
+[output]
+# Scale factor; fractional is fine (1.25, 1.5, 2). Unset: 1. `--scale` wins.
+# scale = 1.5
+
+[xwayland]
+# X11 apps blur under fractional scaling. With this on, xross shows their pixels 1:1
+# (sharp) and sets Xft.dpi so they scale themselves; very old apps (bitmap fonts) end
+# up small. Restart X11 apps after changing it.
+native_scaling = false
+
+[layout]
+# Gap around and between snapped windows (logical px).
+gaps = 0
+# How quickly the second Mod+arrow must follow the first for a quadrant (ms).
+snap_combo_ms = 500
+
+[gestures]
+# Finger travel (touchpad units) for one whole workspace; bigger is slower.
+swipe_px_per_workspace = 500.0
+
+[animations]
+# false: everything snaps into place instantly.
+enabled = true
+# Springs: higher stiffness is faster; damping 1.0 never overshoots, below 1.0 bounces.
+workspace = { stiffness = 900.0, damping = 1.0 }  # sliding between workspaces
+window = { stiffness = 700.0, damping = 1.0 }     # snap, maximize, restore
+open = { stiffness = 900.0, damping = 1.0 }       # new windows appearing
+overview = { stiffness = 800.0, damping = 1.0 }   # opening/closing the overview
+pan = { stiffness = 600.0, damping = 1.0 }        # panning inside the overview
+
+[overview]
+# Workspace size in the overview, relative to the screen.
+scale = 0.25
+
+[touchpad]
+tap = true
+natural_scroll = true
+
+[appearance]
+# Behind everything, and between workspaces while they slide.
+background = "#141419"
+# For apps that can either draw their own title bar or use xross's: use xross's.
+server_decorations = true
+# Rounded corners (logical px, 0 for square) and soft shadows, for windows with
+# xross's title bar. Maximized and edge-to-edge snapped windows stay square.
+corner_radius = 10.0
+shadows = true
+shadow_color = "#00000066"
+# How far shadows spread (logical px); bigger is softer.
+shadow_size = 40.0
+# Icon theme for the title bar's close button (any freedesktop theme: Papirus, ...).
+icon_theme = "Adwaita"
+# Font for title bars and the window switcher (a fontconfig name, e.g. "Inter" or
+# "Noto Sans:bold"). Falls back to the default sans font if it isn't installed.
+font = "NotoSans Nerd Font"
+font_size = 12.5
+
+# Keybinds: "Modifiers+Key" = "action", one table per profile. Your config's
+# [binds.dev] / [binds.prod] entries add to these: the same combo replaces the
+# default, and "none" removes it (the keys then go to apps).
+#
+# Modifiers: Super, Ctrl, Alt, Shift, and Mod (Alt in dev, Super in prod). Keys are
+# xkb keysym names (Return, space, a, F1, XF86AudioRaiseVolume, ...); Shift+Tab is
+# written "Shift+Tab". Modifiers alone ("Super") are a tap: pressed and released with
+# nothing else in between.
+#
+# Actions: spawn CMD, spawn-terminal, close, fullscreen, quit, overview,
+#   snap left|right|up|down, workspace DIR, move-to-workspace DIR,
+#   switcher-next, switcher-prev.
+#
+# Built in, not configurable: Ctrl+Alt+F1..F12 switch VTs; inside the overview and
+# the window switcher, the arrows, Enter and Esc navigate. The window switcher stays
+# open while the modifiers of the bind that opened it are held.
+
+# Super-based, for a session of its own.
+[binds.prod]
+"Super" = "overview"
+"Super+Left" = "snap left"
+"Super+Right" = "snap right"
+"Super+Up" = "snap up"
+"Super+Down" = "snap down"
+"Ctrl+Super+Left" = "workspace left"
+"Ctrl+Super+Right" = "workspace right"
+"Ctrl+Super+Up" = "workspace up"
+"Ctrl+Super+Down" = "workspace down"
+"Ctrl+Shift+Super+Left" = "move-to-workspace left"
+"Ctrl+Shift+Super+Right" = "move-to-workspace right"
+"Ctrl+Shift+Super+Up" = "move-to-workspace up"
+"Ctrl+Shift+Super+Down" = "move-to-workspace down"
+"Super+Tab" = "switcher-next"
+"Super+Shift+Tab" = "switcher-prev"
+"Ctrl+grave" = "spawn-terminal"
+"Ctrl+Alt+BackSpace" = "quit"
+
+# Alt-based, for running nested inside another desktop (which keeps Super).
+[binds.dev]
+"Shift+Alt" = "overview"
+"Alt+Left" = "snap left"
+"Alt+Right" = "snap right"
+"Alt+Up" = "snap up"
+"Alt+Down" = "snap down"
+"Shift+Alt+Left" = "workspace left"
+"Shift+Alt+Right" = "workspace right"
+"Shift+Alt+Up" = "workspace up"
+"Shift+Alt+Down" = "workspace down"
+"Ctrl+Shift+Alt+Left" = "move-to-workspace left"
+"Ctrl+Shift+Alt+Right" = "move-to-workspace right"
+"Ctrl+Shift+Alt+Up" = "move-to-workspace up"
+"Ctrl+Shift+Alt+Down" = "move-to-workspace down"
+"Alt+Tab" = "switcher-next"
+"Alt+Shift+Tab" = "switcher-prev"
+"Ctrl+grave" = "spawn-terminal"
+"Ctrl+Alt+BackSpace" = "quit"

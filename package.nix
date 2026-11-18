@@ -89,7 +89,7 @@ rustPlatform.buildRustPackage {
 
   postInstall = ''
     install -Dm644 resources/xross.desktop $out/share/wayland-sessions/xross.desktop
-    install -Dm644 resources/config.example.toml $out/share/doc/xross/config.example.toml
+    install -Dm644 resources/default-config.toml $out/share/doc/xross/default-config.toml
     # Tools xross runs itself. The terminal (foot by default) and screen locker come
     # from the system.
     wrapProgram $out/bin/xross \
