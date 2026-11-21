@@ -23,6 +23,7 @@
   xwayland,
   xrdb,
   dbus,
+  libxcursor,
 }:
 
 let
@@ -35,6 +36,10 @@ let
     libglvnd
     vulkan-loader
     mesa
+    # Not for xross: X11 apps launched from it inherit this path, and libX11 dlopen()s
+    # libXcursor by bare name to load themed cursors. Without it, older X11 apps (xterm,
+    # Motif, Tk...) get X's tiny bitmap cursors, which look smaller still when scaled.
+    libxcursor
   ];
 in
 rustPlatform.buildRustPackage {

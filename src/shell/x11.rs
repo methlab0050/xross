@@ -131,7 +131,11 @@ impl XrossState {
         }
         self.x_resources_dpi = Some(dpi);
         let cursor = (24.0 * scale).round() as i32;
-        let cmd = format!("printf 'Xft.dpi: {dpi}\\nXcursor.size: {cursor}\\n' | xrdb -merge");
+        // The theme xross draws its own cursor with (set by `CursorManager::new`), also for
+        // X11 apps started without our environment.
+        let theme = std::env::var("XCURSOR_THEME").unwrap_or_else(|_| "Adwaita".into());
+        let theme: String = theme.chars().filter(|c| c.is_ascii_alphanumeric() || "-_. ".contains(*c)).collect();
+        let cmd = format!("printf 'Xft.dpi: {dpi}\\nXcursor.size: {cursor}\\nXcursor.theme: {theme}\\n' | xrdb -merge");
         match std::process::Command::new("sh").arg("-c").arg(&cmd).status() {
             Ok(s) if s.success() => tracing::info!(dpi, cursor, "X resources updated"),
             _ => tracing::warn!("couldn't run xrdb; X11 apps won't know to scale themselves (install xrdb)"),

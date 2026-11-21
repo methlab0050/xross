@@ -137,7 +137,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         state.pending_startup_commands.insert(
             0,
             "dbus-update-activation-environment --systemd WAYLAND_DISPLAY DISPLAY XDG_CURRENT_DESKTOP \
-             XDG_SESSION_TYPE XDG_SESSION_DESKTOP"
+             XDG_SESSION_TYPE XDG_SESSION_DESKTOP XCURSOR_THEME"
                 .into(),
         );
     }

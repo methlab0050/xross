@@ -47,6 +47,11 @@ impl CursorManager {
             unsafe { std::env::set_var("XCURSOR_PATH", path) };
         }
         let name = std::env::var("XCURSOR_THEME").unwrap_or_else(|_| "Adwaita".into());
+        // Children (X11 apps above all) use the same theme. Without a name, libXcursor
+        // looks for a "default" theme and, if there's none, falls back to X's tiny bitmap
+        // cursors, which don't scale. Not XCURSOR_SIZE: it would override the scaled
+        // `Xcursor.size` X11 apps get (see `update_x_resources`).
+        unsafe { std::env::set_var("XCURSOR_THEME", &name) };
         let size = std::env::var("XCURSOR_SIZE").ok().and_then(|s| s.parse().ok()).unwrap_or(24);
         Self { theme: CursorTheme::load(&name), size, icons: HashMap::new(), buffers: HashMap::new() }
     }
