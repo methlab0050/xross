@@ -97,6 +97,14 @@ impl XrossState {
         state.set_client_scale(scale);
         tracing::info!(scale, "Xwayland client scale");
 
+        // Re-send every output's xdg_output size and position in the new X coordinates.
+        // Xwayland sizes its root window from them; left stale (sent at bind time, at scale
+        // 1), the root is smaller than the screen in X pixels, so X clamps the pointer short
+        // of the right and bottom edges and clicks there never land.
+        for output in self.space.outputs() {
+            output.change_current_state(None, None, None, None);
+        }
+
         // Floating X11 windows: tell X where they are in the new coordinates.
         let x11: Vec<Window> = self.space.elements().filter(|w| w.x11_surface().is_some()).cloned().collect();
         for w in &x11 {
